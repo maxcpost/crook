@@ -94,6 +94,11 @@ final class CrookDocument: NSDocument {
             } else {
                 editor.bridge.load(text: self.loadedText, profile: self.loadedProfile)
             }
+            // Put the caret in the document. Opening a file from Finder or the
+            // command line never went through retarget(), which is the only
+            // path that focused the editor, so a launched-into file could be
+            // read but not typed into until you clicked it.
+            editor.focusEditor()
         }
         editor.bridge.load(text: loadedText, profile: loadedProfile)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak editor] in

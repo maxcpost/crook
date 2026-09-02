@@ -15,6 +15,7 @@ echo "==> assemble bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
 cp web/dist/editor.js web/src/editor.html web/src/theme.css "$APP/Contents/Resources/web/"
+cp Assets/Crook.icns "$APP/Contents/Resources/Crook.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -22,6 +23,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>Crook</string>
   <key>CFBundleExecutable</key><string>Crook</string>
+  <key>CFBundleIconFile</key><string>Crook</string>
   <key>CFBundleIdentifier</key><string>com.newvisiondevgrp.Crook</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>

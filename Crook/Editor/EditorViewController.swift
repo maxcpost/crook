@@ -103,7 +103,12 @@ final class EditorViewController: NSViewController, WKUIDelegate {
         // The editor is where the caret lives. Without this the web view is
         // never first responder and every Edit-menu command — Select All
         // included — targets nothing.
-        view.window?.makeFirstResponder(webView)
+        //
+        // makeFirstResponder alone is not enough, which is the subtle half:
+        // it hands AppKit keyboard focus to the WKWebView, but the page's
+        // contenteditable inside it stays unfocused, so keystrokes arrive at
+        // the web view and CodeMirror ignores them. Both halves are required.
+        focusEditor()
         applyStoredScale()
     }
 
