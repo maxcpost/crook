@@ -114,7 +114,7 @@ enum PathScanner {
             }) { i = end; continue }
 
             let expanded = candidate.hasPrefix("~/")
-                ? Paths.home + String(candidate.dropFirst(1))
+                ? Providers.current.homePath + String(candidate.dropFirst(1))
                 : candidate
             let belowRoot = expanded.hasPrefix("/Users/")
                 ? expanded.dropFirst("/Users/".count).contains("/")
@@ -122,7 +122,7 @@ enum PathScanner {
             if !belowRoot { i = end; continue }
 
             // Stage 6 — does it exist?
-            if !FileManager.default.fileExists(atPath: expanded) {
+            if !Providers.current.exists(expanded) {
                 out.append(DeadPath(from: i,
                                     to: i + candidate.utf16.count,
                                     path: candidate,
@@ -278,7 +278,7 @@ enum PathScanner {
         var url = URL(fileURLWithPath: path).deletingLastPathComponent()
         var hops = 0
         while hops < 24, url.path.count > 1 {
-            if FileManager.default.fileExists(atPath: url.path) { return url.path }
+            if Providers.current.exists(url.path) { return url.path }
             url = url.deletingLastPathComponent()
             hops += 1
         }

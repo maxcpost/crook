@@ -142,7 +142,7 @@ final class CrookDocument: NSDocument {
     /// Re-read from disk into the live editor, preserving the caret.
     func reloadFromDisk() {
         guard let url = fileURL,
-              let data = FileManager.default.contents(atPath: url.path),
+              let data = Providers.current.contents(url.path),
               let (text, profile) = try? ByteCodec.decode(data) else { return }
         loadedText = text
         loadedProfile = profile

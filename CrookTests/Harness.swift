@@ -129,3 +129,23 @@ enum T {
         (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
     }
 }
+
+/// A provider that behaves exactly like the local one but answers to a
+/// different name. Enough to prove that per-machine state stays separated
+/// without needing a second machine.
+final class StubProvider: FileProvider {
+    let id: String
+    init(id: String) { self.id = id }
+    var displayName: String { id }
+    var homePath: String { Paths.home }
+    var isLocal: Bool { false }
+    var isConnected: Bool { true }
+    private let inner = LocalProvider()
+    func list(_ p: String) -> [FSEntry] { inner.list(p) }
+    func exists(_ p: String) -> Bool { inner.exists(p) }
+    func isDirectory(_ p: String) -> Bool { inner.isDirectory(p) }
+    func fingerprint(_ p: String) -> (mtime: Double, size: Int)? { inner.fingerprint(p) }
+    func contents(_ p: String) -> Data? { inner.contents(p) }
+    func write(_ d: Data, to p: String) throws { try inner.write(d, to: p) }
+    func symlinkDestination(_ p: String) -> String? { inner.symlinkDestination(p) }
+}

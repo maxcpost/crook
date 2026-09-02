@@ -222,7 +222,11 @@ enum ReachClassifier {
 
     // MARK: - classification
 
-    private static var home: String { Paths.home }
+    /// The home of the machine that owns the file being classified — not
+    /// necessarily this one. Every rule below is home-relative shape matching,
+    /// so reading this from the wrong machine yields sentences that are wrong
+    /// with total confidence.
+    private static var home: String { Providers.current.homePath }
     private static var claudeHome: String { home + "/.claude" }
 
     static func classify(_ url: URL, text: String) -> Role {
@@ -310,7 +314,7 @@ enum ReachClassifier {
         var dir = url.deletingLastPathComponent()
         var hops = 0
         while hops < 8, dir.path.count > 1 {
-            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("SKILL.md").path) {
+            if Providers.current.exists(dir.appendingPathComponent("SKILL.md").path) {
                 return dir
             }
             dir = dir.deletingLastPathComponent()
@@ -334,11 +338,11 @@ enum ReachClassifier {
     /// it is a symlink to it, or imports it with @path.
     private static func claudeMdReaches(_ agents: URL) -> Bool {
         let sibling = agents.deletingLastPathComponent().appendingPathComponent("CLAUDE.md")
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: sibling.path) else { return false }
-        if let dest = try? fm.destinationOfSymbolicLink(atPath: sibling.path),
+        guard Providers.current.exists(sibling.path) else { return false }
+        if let dest = Providers.current.symlinkDestination(sibling.path),
            dest.hasSuffix("AGENTS.md") { return true }
-        guard let body = try? String(contentsOf: sibling, encoding: .utf8) else { return false }
+        guard let data = Providers.current.contents(sibling.path),
+              let body = String(data: data, encoding: .utf8) else { return false }
         return body.contains("@AGENTS.md") || body.contains("@./AGENTS.md")
     }
 }

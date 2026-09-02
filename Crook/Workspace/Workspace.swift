@@ -124,20 +124,21 @@ final class Workspace {
         return nil
     }
 
+    /// ~/.claude on whichever machine this window is looking at.
     private var claudeHome: URL {
-        Paths.claudeURL
+        Providers.current.claudeURL
     }
 
     /// ~/.claude — skills, commands, agents, settings.json, and the memory nodes
     /// under projects/*/memory (the transcripts beside them are excluded).
     private func buildSystem() -> [Node] {
-        let fm = FileManager.default
+        let p = Providers.current
         let home = claudeHome
         var out: [Node] = []
 
         for sub in ["skills", "commands", "agents"] {
             let dir = home.appendingPathComponent(sub)
-            guard fm.fileExists(atPath: dir.path) else { continue }
+            guard p.exists(dir.path) else { continue }
             let kids = scan(dir, depth: 0)
             if !kids.isEmpty {
                 out.append(Node(kind: .folder, name: sub, url: dir, children: kids))
@@ -145,7 +146,7 @@ final class Workspace {
         }
 
         let settings = home.appendingPathComponent("settings.json")
-        if fm.fileExists(atPath: settings.path) {
+        if p.exists(settings.path) {
             let n = Node(kind: .file, name: "settings.json", url: settings)
             n.delta = SeenStore.shared.delta(for: settings)
             out.append(n)
@@ -155,10 +156,11 @@ final class Workspace {
         // beside them are excluded (D-50).
         let projectsDir = home.appendingPathComponent("projects")
         var memoryNodes: [Node] = []
-        if let entries = try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) {
-            for e in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+        let projectEntries = p.list(projectsDir.path).map { URL(fileURLWithPath: $0.path) }
+        if !projectEntries.isEmpty {
+            for e in projectEntries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 let mem = e.appendingPathComponent("memory")
-                guard fm.fileExists(atPath: mem.path) else { continue }
+                guard p.exists(mem.path) else { continue }
                 let kids = scan(mem, depth: 0)
                 guard !kids.isEmpty else { continue }
                 memoryNodes.append(Node(kind: .folder,
@@ -175,15 +177,15 @@ final class Workspace {
 
     /// A project expands to only the Claude files inside it.
     func buildProject(at root: URL) -> Node? {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else { return nil }
+        let p = Providers.current
+        guard p.isDirectory(root.path) else { return nil }
 
         var kids: [Node] = []
 
-        for top in ["CLAUDE.md", "AGENTS.md"] {
+        // .mcp.json sits here too: project-scoped MCP servers, committed to git.
+        for top in ["CLAUDE.md", "AGENTS.md", ".mcp.json"] {
             let u = root.appendingPathComponent(top)
-            if fm.fileExists(atPath: u.path) {
+            if p.exists(u.path) {
                 let n = Node(kind: .file, name: top, url: u)
                 n.delta = SeenStore.shared.delta(for: u)
                 kids.append(n)
@@ -191,7 +193,7 @@ final class Workspace {
         }
 
         let dotClaude = root.appendingPathComponent(".claude")
-        if fm.fileExists(atPath: dotClaude.path) {
+        if p.exists(dotClaude.path) {
             let inner = scan(dotClaude, depth: 0)
             if !inner.isEmpty {
                 kids.append(Node(kind: .folder, name: ".claude", url: dotClaude, children: inner))
@@ -204,7 +206,7 @@ final class Workspace {
         // cut feature and matched no real directory.
         for extra in ["memory", "skills"] {
             let u = root.appendingPathComponent(extra)
-            guard fm.fileExists(atPath: u.path), !kids.contains(where: { $0.url == u }) else { continue }
+            guard p.exists(u.path), !kids.contains(where: { $0.url == u }) else { continue }
             let inner = scan(u, depth: 0)
             if !inner.isEmpty {
                 kids.append(Node(kind: .folder, name: extra, url: u, children: inner))
@@ -224,23 +226,21 @@ final class Workspace {
     /// Recursive scan, Claude files only, excluded directories never entered.
     private func scan(_ dir: URL, depth: Int) -> [Node] {
         guard depth < 6 else { return [] }
-        let fm = FileManager.default
-        // Not skipsHiddenFiles: .mcp.json is a dotfile and a file Claude reads.
-        // Hidden entries are filtered below instead, so one specific dotfile can
-        // be let through without opening the door to .DS_Store and .git.
-        guard let entries = try? fm.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: []
-        ) else { return [] }
+        // The listing carries isDirectory, so this walk costs one call per
+        // directory rather than one per entry — which is what makes it viable
+        // when the directory is on another machine.
+        let listing = Providers.current.list(dir.path)
+        guard !listing.isEmpty else { return [] }
 
         var folders: [Node] = []
         var files: [Node] = []
 
-        for e in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+        for entry in listing.sorted(by: { ($0.path as NSString).lastPathComponent.localizedStandardCompare(($1.path as NSString).lastPathComponent) == .orderedAscending }) {
+            let e = URL(fileURLWithPath: entry.path)
             let leaf = e.lastPathComponent
             // Everything hidden stays hidden except the handful Claude reads.
             if leaf.hasPrefix("."), !Self.visibleDotfiles.contains(leaf) { continue }
-            let isDir = (try? e.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDir {
+            if entry.isDirectory {
                 if Self.excludedDirs.contains(e.lastPathComponent) { continue }
                 if dir == claudeHome && Self.excludedSystemDirs.contains(e.lastPathComponent) { continue }
                 let kids = scan(e, depth: depth + 1)
@@ -270,16 +270,16 @@ final class Workspace {
         let parts = slug.dropFirst().split(separator: "-", omittingEmptySubsequences: false).map(String.init)
         var path = ""
         var i = 0
-        let fm = FileManager.default
+        let p = Providers.current
         while i < parts.count {
             var candidate = path + "/" + parts[i]
             var j = i
             // Extend with further "-"-joined components while nothing exists.
-            while !fm.fileExists(atPath: candidate), j + 1 < parts.count {
+            while !p.exists(candidate), j + 1 < parts.count {
                 j += 1
                 candidate += "-" + parts[j]
             }
-            guard fm.fileExists(atPath: candidate) else { return nil }
+            guard p.exists(candidate) else { return nil }
             path = candidate
             i = j + 1
         }
@@ -298,13 +298,13 @@ final class Workspace {
     /// shared by dozens of files: the enclosing skill package if there is one,
     /// otherwise the imported project, otherwise the parent directory.
     func contextLabel(for url: URL) -> String? {
-        let fm = FileManager.default
+        let p = Providers.current
 
         // Nearest ancestor holding a SKILL.md — the package is the unit of work.
         var dir = url.deletingLastPathComponent()
         var hops = 0
         while hops < 6, dir.path.count > 1 {
-            if fm.fileExists(atPath: dir.appendingPathComponent("SKILL.md").path) {
+            if p.exists(dir.appendingPathComponent("SKILL.md").path) {
                 return dir.lastPathComponent
             }
             dir = dir.deletingLastPathComponent()
@@ -355,11 +355,13 @@ final class Workspace {
     /// Suggestions for the import picker, drawn from the directories Claude Code
     /// already maintains. Suggestions only — nothing enters unchosen (D-56).
     func suggestions() -> [URL] {
+        let p = Providers.current
         let dir = claudeHome.appendingPathComponent("projects")
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        let entries = p.list(dir.path)
+        guard !entries.isEmpty else { return [] }
         let imported = Set(importedURLs().map(\.path))
-        return entries.compactMap { e -> (URL, Date)? in
+        return entries.compactMap { entry -> (URL, Date)? in
+            let e = URL(fileURLWithPath: entry.path)
             // slug -Users-max-Documents-Foo  ->  /Users/max/Documents/Foo
             // Claude Code slugs a path by replacing "/" with "-", which is
             // lossy: a directory called ab-cd is indistinguishable from
@@ -369,11 +371,9 @@ final class Workspace {
             let slug = e.lastPathComponent
             guard slug.hasPrefix("-") else { return nil }
             let path = Self.decodeSlug(slug) ?? slug.replacingOccurrences(of: "-", with: "/")
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return nil }
+            guard p.isDirectory(path) else { return nil }
             guard !imported.contains(path) else { return nil }
-            let d = (try? e.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-            return (URL(fileURLWithPath: path), d)
+            return (URL(fileURLWithPath: path), Date(timeIntervalSince1970: entry.mtime))
         }
         .sorted { $0.1 > $1.1 }
         .map(\.0)

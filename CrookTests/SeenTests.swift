@@ -96,5 +96,43 @@ extension SeenTests {
         T.ok("P-02  prune drops the snapshot of a deleted file",
              countAfter < countWith, "\(countWith) -> \(countAfter)")
         T.ok("P-03  and the entry with it", s.delta(for: f) == nil)
+
+        // --- machine isolation -------------------------------------------
+        //
+        // Nearly shipped the inverse of this. When entry keys gained a machine
+        // prefix, prune was still handing whole KEYS to fileExists — so every
+        // path looked missing and prune would have deleted the entire store on
+        // its first run three seconds after launch.
+        T.suite("seen — one store, two machines")
+
+        let dir2 = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("crook-two-machines-\(ProcessInfo.processInfo.processIdentifier)")
+        try? FileManager.default.createDirectory(at: dir2, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir2) }
+        let g = dir2.appendingPathComponent("CLAUDE.md")
+        try! "one\ntwo\nthree\n".write(to: g, atomically: true, encoding: .utf8)
+
+        let far = StubProvider(id: "ssh:elsewhere")
+        Providers.use(far)
+        s.markSeen(g)
+        Thread.sleep(forTimeInterval: 0.05)
+        T.ok("P-04  a file opened on another machine is recorded", s.snapshot(for: g) != nil)
+
+        Providers.useLocal()
+        T.ok("P-05  and is invisible from this one", s.snapshot(for: g) == nil)
+
+        // The file is gone from the shared disk, so THIS machine would judge it
+        // dead. The other machine's record must survive anyway: not being able
+        // to check is not the same as knowing it is gone.
+        try? FileManager.default.removeItem(at: g)
+        s.prune()
+        Providers.use(far)
+        T.ok("P-06  pruning here does not touch another machine's records",
+             s.snapshot(for: g) != nil)
+
+        // Pruning while actually connected to that machine does clear it.
+        s.prune()
+        T.ok("P-07  pruning there does", s.snapshot(for: g) == nil)
+        Providers.useLocal()
     }
 }

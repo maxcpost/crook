@@ -32,6 +32,13 @@ final class SeenStore {
     /// queue. Swift Dictionary is not thread-safe, and the three-second prune
     /// lands squarely in the window when the first files are being opened.
     private let lock = NSLock()
+    /// Keyed by provider AND path, never path alone.
+    ///
+    /// Two machines routinely hold the same path — /Users/you/.claude/CLAUDE.md
+    /// exists on the laptop and on the mini, and they are different files with
+    /// different histories. Keying on the path alone would have one machine's
+    /// figures overwrite the other's, silently, and the first symptom would be
+    /// a nonsense line delta. See `key(_:)`.
     private var entries: [String: Entry] = [:]
     private let url: URL
     /// Where the last-opened CONTENT of each file lives. A hash tells you
@@ -48,8 +55,20 @@ final class SeenStore {
         try? FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
         if let d = try? Data(contentsOf: url),
            let e = try? JSONDecoder().decode([String: Entry].self, from: d) {
-            entries = e
+            // Migration: keys written before machines existed are bare paths,
+            // and every one of them referred to this Mac.
+            entries = Dictionary(uniqueKeysWithValues: e.map { k, v in
+                (k.contains(Self.keySeparator) ? k : "local\(Self.keySeparator)\(k)", v)
+            })
         }
+    }
+
+    /// Separator between provider id and path. A NUL cannot occur in either, so
+    /// the join is unambiguous and needs no escaping.
+    private static let keySeparator = "\u{0}"
+
+    private func key(_ path: String) -> String {
+        Providers.current.id + Self.keySeparator + path
     }
 
     // MARK: - reading
@@ -65,7 +84,7 @@ final class SeenStore {
     /// rewrote a paragraph in place. "±0" says something happened.
     func delta(for url: URL) -> Int? {
         lock.lock()
-        let prior0 = entries[url.path]
+        let prior0 = entries[key(url.path)]
         lock.unlock()
         guard let prior = prior0 else { return nil }
         guard let m = mtime(url.path) else { return nil }
@@ -84,15 +103,11 @@ final class SeenStore {
         return "\u{00B1}0"
     }
 
-    /// lstat rather than URLResourceValues: measured 0.368 ms vs 297 ms across
-    /// the fixture, because resourceValues faults in dataless iCloud
-    /// placeholders. SF_DATALESS files are skipped entirely — materialising one
-    /// to draw a rail figure would be an outrageous trade.
+    /// The cheap half of the change check: never reads the file. The lstat
+    /// specifics, and the dataless-placeholder skip, moved into LocalProvider
+    /// so the remote provider can answer the same question from its snapshot.
     private func mtime(_ path: String) -> Double? {
-        var st = stat()
-        guard lstat(path, &st) == 0 else { return nil }
-        if st.st_flags & UInt32(SF_DATALESS) != 0 { return nil }
-        return Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1e9
+        Providers.current.fingerprint(path)?.mtime
     }
 
     // MARK: - writing
@@ -102,7 +117,7 @@ final class SeenStore {
     /// rewritten has to clear its figure again.
     func markSeen(_ url: URL?) {
         guard let url, let m = measure(url) else { return }
-        lock.lock(); entries[url.path] = m; dirty = true; lock.unlock()
+        lock.lock(); entries[key(url.path)] = m; dirty = true; lock.unlock()
         scheduleFlush()
         writeSnapshot(url)
     }
@@ -110,13 +125,20 @@ final class SeenStore {
     // MARK: - snapshots
 
     private func snapshotURL(_ path: String) -> URL {
+        snapshotURL(forKey: key(path))
+    }
+
+    /// Hash the machine-qualified key, not the bare path, for the same reason
+    /// the entry map does — otherwise the mini's copy of a file and this Mac's
+    /// copy would overwrite each other's snapshots.
+    private func snapshotURL(forKey k: String) -> URL {
         var h: UInt64 = 0xcbf29ce484222325
-        for b in path.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        for b in k.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
         return snapshots.appendingPathComponent(String(h, radix: 16, uppercase: false))
     }
 
     private func writeSnapshot(_ url: URL) {
-        guard let data = FileManager.default.contents(atPath: url.path) else { return }
+        guard let data = Providers.current.contents(url.path) else { return }
         // Cap it. A snapshot exists to show a diff, and a multi-megabyte file
         // is not one a person reviews line by line.
         guard data.count <= 2_000_000 else { return }
@@ -151,7 +173,7 @@ final class SeenStore {
     private var openURL: URL?
 
     private func measure(_ url: URL) -> Entry? {
-        guard let data = FileManager.default.contents(atPath: url.path) else { return nil }
+        guard let data = Providers.current.contents(url.path) else { return nil }
         guard let m = mtime(url.path) else { return nil }
 
         var lines = 0
@@ -191,23 +213,34 @@ final class SeenStore {
     /// forever, and nothing ever removed them.
     func prune() {
         let fm = FileManager.default
+        let provider = Providers.current
+        let mine = provider.id + Self.keySeparator
+
         lock.lock()
         let keys = Array(entries.keys)
         lock.unlock()
 
-        let live = keys.filter { fm.fileExists(atPath: $0) }
-        let liveSet = Set(live)
+        // Only entries belonging to the machine currently connected can be
+        // judged. Anything recorded against another machine is retained
+        // untouched: this Mac cannot see the mini's disk while disconnected,
+        // and "I can't check" must never be treated as "it's gone".
+        var survivors = Set<String>()
+        for k in keys {
+            guard k.hasPrefix(mine) else { survivors.insert(k); continue }
+            let path = String(k.dropFirst(mine.count))
+            if provider.exists(path) { survivors.insert(k) }
+        }
 
-        if liveSet.count != keys.count {
+        if survivors.count != keys.count {
             lock.lock()
-            entries = entries.filter { liveSet.contains($0.key) }
+            entries = entries.filter { survivors.contains($0.key) }
             dirty = true
             lock.unlock()
             scheduleFlush()
         }
 
         // A snapshot with no surviving entry can never be shown again.
-        let keep = Set(live.map { snapshotURL($0).lastPathComponent })
+        let keep = Set(survivors.map { snapshotURL(forKey: $0).lastPathComponent })
         if let files = try? fm.contentsOfDirectory(atPath: snapshots.path) {
             for f in files where !keep.contains(f) {
                 try? fm.removeItem(at: snapshots.appendingPathComponent(f))
