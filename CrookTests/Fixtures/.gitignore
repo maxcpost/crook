@@ -1,0 +1,9 @@
+# The corpus is a fixture, not a working tree. Every file under corpus/ is
+# checked in on purpose, including the ones that are machine exhaust anywhere
+# else.
+#
+# A global gitignore commonly carries `**/.claude/settings.local.json`, which
+# would silently drop one file from a 43-file corpus whose counts the suite
+# asserts. A .gitignore this deep outranks core.excludesFile, so the negation
+# here is what actually keeps the file.
+!corpus/**/settings.local.json

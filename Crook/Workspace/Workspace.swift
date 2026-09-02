@@ -50,7 +50,7 @@ final class Workspace {
     // MARK: - what counts as a Claude file
 
     /// Directories never descended into, anywhere. Inside an imported project the
-    /// blast radius is one folder the user chose, but Atlas alone contains
+    /// blast radius is one folder the user chose, but one real project contains
     /// four vendored Playwright SKILL.md files under node_modules.
     static let excludedDirs: Set<String> = [
         "node_modules", ".venv", "venv", "site-packages", ".git", "dist", "build",
@@ -193,8 +193,10 @@ final class Workspace {
         }
 
         // A memory directory the project points Claude at, plus loose SKILL.md
-        // packages living outside .claude — 24 of the user's 34 are like that.
-        for extra in ["brain", "memory", "skills"] {
+        // packages living outside .claude, which is where most of them live in
+        // practice. "brain" used to be in this list; it was a leftover from a
+        // cut feature and matched no real directory.
+        for extra in ["memory", "skills"] {
             let u = root.appendingPathComponent(extra)
             guard fm.fileExists(atPath: u.path), !kids.contains(where: { $0.url == u }) else { continue }
             let inner = scan(u, depth: 0)
@@ -269,7 +271,7 @@ final class Workspace {
     }
 
     private func prettySlug(_ slug: String) -> String {
-        // Resolve properly so ab-cd is not truncated to "UFM".
+        // Resolve properly so a hyphenated folder is not truncated to its tail.
         if let p = Self.decodeSlug(slug) {
             return (p as NSString).lastPathComponent
         }
@@ -345,7 +347,7 @@ final class Workspace {
             // slug -Users-max-Documents-Foo  ->  /Users/max/Documents/Foo
             // Claude Code slugs a path by replacing "/" with "-", which is
             // lossy: a directory called ab-cd is indistinguishable from
-            // Notes/UFM. Walk the components and re-join greedily against the
+            // ab/cd. Walk the components and re-join greedily against the
             // filesystem instead of blindly swapping every hyphen, which
             // dropped every project whose name contains one.
             let slug = e.lastPathComponent

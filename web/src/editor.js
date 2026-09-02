@@ -462,7 +462,14 @@ const theme = EditorView.theme({
     // Wider than the classic 68ch: this corpus is full of long paths and
     // table rows, and a 950pt pane was leaving ~300pt unused. Still centred
     // with real side margins — never edge to edge.
-    maxWidth: "var(--c-measure)",
+    //
+    // min(..., 100%) rather than the measure alone. A bare max-width is a
+    // ceiling, not a fit: in a window narrower than 88ch the content box stays
+    // 88ch, so lines wrap at the measure instead of the pane and the overflow
+    // scrolls off to the right. At the default window size that clipped every
+    // long line in the file, which looked like wrapping was simply broken.
+    maxWidth: "min(var(--c-measure), 100%)",
+    boxSizing: "border-box",
     margin: "0 auto",
     padding: "0 clamp(28px, 4vw, 64px)",
     caretColor: "var(--c-accent)",

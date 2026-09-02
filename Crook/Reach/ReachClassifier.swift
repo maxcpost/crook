@@ -39,7 +39,7 @@ enum ReachClassifier {
     /// NOT the same question as "does Crook have a sentence for it". Deriving
     /// this from `classify() != .unknown` silences the scanner on 141 of 270
     /// fixture files, 4 of which carry 6 real dead references — including
-    /// project_placecraft.md, which has 3. A memory node has no reach sentence
+    /// project_atlas.md, which has 3. A memory node has no reach sentence
     /// because nothing about its path is worth stating, but its contents are
     /// injected into context, so a dead path inside it is exactly as broken.
     ///

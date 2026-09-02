@@ -7,8 +7,9 @@ enum ByteTests {
         var identical = 0, mismatched = 0
         var crlf = 0, noFinalNL = 0, bom = 0, loneCR = 0, mixed = 0
         var trailingWS = 0, leadingTab = 0, astral = 0
+        var missing: [String] = []
         for p in T.fixture {
-            guard let data = FileManager.default.contents(atPath: p) else { continue }
+            guard let data = FileManager.default.contents(atPath: p) else { missing.append(p); continue }
             guard let (text, profile) = try? ByteCodec.decode(data) else { mismatched += 1; continue }
             if profile.lineEnding == .crlf { crlf += 1 }
             if profile.lineEnding == .cr { loneCR += 1 }
@@ -26,6 +27,13 @@ enum ByteTests {
             if s.unicodeScalars.contains(where: { $0.value > 0xFFFF }) { astral += 1 }
         }
         T.ok("B-00  the corpus was found", T.fixture.count > 0, "\(T.fixture.count) files")
+        // A file the list names but the checkout does not have. Worth its own
+        // assertion because the cause is never in this repository's code: a
+        // global gitignore carrying `**/.claude/settings.local.json` drops one
+        // of these on the way into the commit, and every count below then fails
+        // by one with nothing to say why.
+        T.ok("B-17  every file the list names is present", missing.isEmpty,
+             "missing \(missing.count): \(missing.map { ($0 as NSString).lastPathComponent })")
         T.eq("B-01  every fixture file round-trips byte-identical", identical, T.fixture.count)
         T.eq("B-02  no mismatches", mismatched, 0)
 

@@ -8,6 +8,7 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     /// The reach readout. AppKit, overlaid on the editor pane — never inside
     /// the web view, which stays at zero controls in every state.
     private var reachLabel: NSTextField!
+    private var reachChip: ReachChip!
     private var diff: DiffOverlay?
     private var empty: EmptyStateView!
     /// The document currently displayed. There is ONE editor, so a document
@@ -65,11 +66,26 @@ final class EditorViewController: NSViewController, WKUIDelegate {
         reachLabel.lineBreakMode = .byTruncatingHead
         reachLabel.alignment = .right
         reachLabel.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(reachLabel)
+
+        // The label needs something behind it. It floats over the web view, and
+        // scrolled anywhere but the end of a document there is body text under
+        // that corner — two greys at similar weight, overlapping. It read as a
+        // rendering fault rather than a readout. An opaque chip in the editor's
+        // own background colour separates the two without introducing a rule or
+        // a status bar, and it disappears against the page when the corner is
+        // empty, which is most of the time.
+        reachChip = ReachChip()
+        reachChip.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(reachChip)
+        reachChip.addSubview(reachLabel)
         NSLayoutConstraint.activate([
-            reachLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            reachLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            reachLabel.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            reachChip.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            reachChip.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -8),
+            reachChip.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 20),
+            reachLabel.leadingAnchor.constraint(equalTo: reachChip.leadingAnchor, constant: 8),
+            reachLabel.trailingAnchor.constraint(equalTo: reachChip.trailingAnchor, constant: -8),
+            reachLabel.topAnchor.constraint(equalTo: reachChip.topAnchor, constant: 4),
+            reachLabel.bottomAnchor.constraint(equalTo: reachChip.bottomAnchor, constant: -4),
         ])
 
         // Shown whenever there is no document. Sits above the web view rather
@@ -179,7 +195,7 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     /// Show or hide the empty state. Called whenever the open document changes.
     func showEmptyState(_ show: Bool, onAddProject: (() -> Void)? = nil) {
         empty.isHidden = !show
-        reachLabel.isHidden = show
+        reachChip.isHidden = show
         if show {
             if let onAddProject { empty.onAddProject = onAddProject }
             empty.refresh(hasSystemFiles: !Workspace.shared.system.isEmpty,
@@ -190,10 +206,32 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     func setReach(_ text: String) {
         guard reachLabel.stringValue != text else { return }
         reachLabel.stringValue = text
+        // Nothing to separate when there is nothing to say.
+        reachChip.isHidden = text.isEmpty
     }
+
+
 
     func focusEditor() {
         view.window?.makeFirstResponder(webView)
         webView.evaluateJavaScript("CrookEditor.focus();")
+    }
+}
+
+/// The backing behind the reach readout.
+///
+/// A view rather than a colour set once, because the appearance can change
+/// under it — the toggle in the corner, or the system switching at sunset —
+/// and updateLayer is the only hook that fires for both.
+private final class ReachChip: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
     }
 }
