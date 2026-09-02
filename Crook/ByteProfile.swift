@@ -45,8 +45,8 @@ enum ByteProfileError: Error, CustomStringConvertible {
 /// is never set on the CodeMirror side: CM6 stores a CRLF as ONE unit while
 /// NSMutableString stores two, which diverges the two coordinate spaces. Measured:
 /// doc.length matched source length on only 262 of 270 fixture files under that
-/// arrangement, and a Swift insert at offset 144 in
-/// a CRLF command file/.claude/commands/c4.md landed two characters late.
+/// arrangement, and a Swift insert at offset 144 in a CRLF command file landed
+/// two characters late.
 enum ByteCodec {
 
     static let bomUTF8 = Data([0xEF, 0xBB, 0xBF])
