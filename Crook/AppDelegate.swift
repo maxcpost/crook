@@ -3,6 +3,25 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
+    /// No untitled document at launch, ever.
+    ///
+    /// This is load-bearing and the reason is not obvious. Crook is a single
+    /// window that documents are retargeted into, so an untitled document does
+    /// not open a second window — it takes over the only one, replacing the
+    /// empty state with a blank editor titled "Untitled". Someone opening
+    /// Crook for the first time would see a blank page instead of the screen
+    /// that tells them what this is.
+    ///
+    /// It only started happening when the document type's role became Editor:
+    /// AppKit will not auto-create an untitled document for a Viewer-role type,
+    /// so the correct plist fix silently reintroduced the blank-launch bug the
+    /// empty state exists to solve. Nothing about the empty state changed, which
+    /// is what made it hard to see.
+    ///
+    /// ⌘N is unaffected — this governs only automatic opening at launch and on
+    /// reactivation.
+    func applicationShouldOpenUntitledFile(_ app: NSApplication) -> Bool { false }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         buildMenu()
         // Retire state for files that are gone. Never ran before, so both the
@@ -24,12 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             args.append(a)
         }
 
-        // Always put a window on screen. Relying on
-        // openUntitledDocumentAndDisplay was the bug: the markdown type is
-        // declared with role Viewer (so Crook does not hijack .md files), and
-        // AppKit will not create an untitled document for a Viewer-role type.
-        // On a machine with no Claude Code files the app launched with ZERO
-        // windows — the first thing a new user would have seen.
+        // Always put a window on screen. Relying on AppKit to do it was the
+        // original bug: on a machine with no Claude Code files the app launched
+        // with ZERO windows, which was the first thing a new user would have
+        // seen. See applicationShouldOpenUntitledFile above for the other half.
         func showWorkspace() {
             let wc = WorkspaceWindowController.shared
             wc.showWindow(nil)
