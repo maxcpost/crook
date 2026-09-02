@@ -386,12 +386,28 @@ function schedule(view) {
   requestAnimationFrame(() => flush(view))
 }
 
+/// Whether the input method is mid-composition.
+///
+/// Typing Japanese, Chinese, or using a dead-key layout produces a sequence of
+/// provisional states before the committed text. Those are not edits the author
+/// made — they are the IME thinking out loud — and shipping them across the
+/// bridge means Swift's canonical buffer briefly holds text the user never
+/// typed. A save landing in that window would write it.
+function isComposing(view) {
+  return !!(view && view.composing)
+}
+
 /// Drain any batched edit immediately. Called from Swift before a save reads
 /// the canonical buffer: edits normally reach Swift only after a
 /// requestAnimationFrame plus IPC, so a save within ~16 ms of a keystroke
 /// encoded a buffer that was missing those characters.
 function flushNow() {
   if (!view) return 0
+  // A save during composition must not capture a provisional state. Committing
+  // first is the correct behaviour and is what every native control does.
+  if (isComposing(view)) {
+    try { view.contentDOM.blur(); view.contentDOM.focus() } catch (e) {}
+  }
   flush(view)
   return view.state.doc.length
 }
@@ -400,6 +416,10 @@ let lastSelection = -1
 const bridge = ViewPlugin.fromClass(class {
   constructor(view) { this.view = view }
   update(u) {
+    // Hold everything until the IME commits. CodeMirror clears `composing`
+    // when composition ends, and the resulting update carries the final text,
+    // so nothing is lost by waiting — only the provisional states are skipped.
+    if (isComposing(u.view)) return
     if (u.docChanged && !u.transactions.some((tr) => tr.annotation(fromSwift))) {
       // iterChanges triples, never ChangeSet.toJSON — whose newline encoding
       // [0,"",""] a naive decoder silently drops (S03 §4).
