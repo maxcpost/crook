@@ -81,9 +81,19 @@ protocol FileProvider: AnyObject {
     /// symlink to AGENTS.md changes what Claude Code actually reads, and that
     /// link exists on the owning machine, not this one.
     func symlinkDestination(_ path: String) -> String?
+    /// Answer many existence questions at once.
+    ///
+    /// Locally this is pointless and does nothing. Across a link it is the
+    /// difference between one round trip and one per path, which is why it is
+    /// on the protocol rather than behind a cast: the callers that benefit
+    /// should not have to know which kind of provider they hold.
+    func prefetchExistence(_ paths: [String])
 }
 
 extension FileProvider {
+    /// Nothing to gain when the disk is right here.
+    func prefetchExistence(_ paths: [String]) {}
+
     var claudePath: String { homePath + "/.claude" }
     var claudeURL: URL { URL(fileURLWithPath: claudePath) }
 }

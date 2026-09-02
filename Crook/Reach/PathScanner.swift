@@ -63,11 +63,34 @@ enum PathScanner {
     /// - Parameter roleGated: only scan files Crook has classified into a
     ///   Claude Code role. A path in a README is prose; a path in a slash
     ///   command is an instruction.
+    /// Anything shaped like an absolute path, with no judgement applied.
+    /// Cheap, permissive, and wrong in the safe direction.
+    private static func coarseCandidates(_ text: String, home: String) -> [String] {
+        var out: [String] = []
+        for token in text.split(whereSeparator: { " \t\n\r\"\'`(),;<>[]{}".contains($0) }) {
+            var t = String(token)
+            while let last = t.last, ".:*?!".contains(last) { t.removeLast() }
+            if t.hasPrefix("~/") { out.append(home + String(t.dropFirst(1))) }
+            else if t.hasPrefix("/"), t.dropFirst().contains("/") { out.append(t) }
+        }
+        return Array(Set(out))
+    }
+
     static func scan(_ text: String, url: URL?, roleGated: Bool = true) -> [DeadPath] {
         if roleGated, let url, !ReachClassifier.hasRole(url) { return [] }
 
         let u = Array(text.utf16)
         guard !u.isEmpty else { return [] }
+
+        // On another machine every existence check is a round trip, and the
+        // scan below asks one at a time. So ask once, up front, for everything
+        // that even LOOKS like an absolute path — a deliberately coarse
+        // superset of what the seven stages will actually accept. Over-fetching
+        // costs nothing here; the answers land in the provider's cache and the
+        // real scan then runs without touching the network at all.
+        let provider = Providers.current
+        provider.prefetchExistence(coarseCandidates(text, home: provider.homePath))
+
         let fenced = fencedRanges(u)
         var out: [DeadPath] = []
         var i = 0

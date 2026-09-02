@@ -59,6 +59,8 @@ final class RailViewController: NSViewController {
         machineButton.contentTintColor = connected || name == nil ? .tertiaryLabelColor : .systemOrange
     }
 
+    private func rail_reloadAfterAdd() { reload() }
+
     @objc private func useLocal() { onUseLocal?() }
     @objc private func connectTapped() { onConnect?() }
     @objc private func switchMachine(_ sender: NSMenuItem) {
@@ -285,6 +287,26 @@ final class RailViewController: NSViewController {
     func beginAddProject() { addProject() }
 
     @objc private func addProject() {
+        // A file panel can only browse a disk this Mac has. For another machine
+        // the agent supplies the candidates instead.
+        if !Providers.current.isLocal {
+            let picker = RemoteProjectPicker()
+            picker.onPick = { [weak self] urls in
+                guard let self else { return }
+                for u in urls { self.ws.addProject(u) }
+                if let remote = Providers.current as? RemoteProvider {
+                    // The new roots have to reach the agent before its tree can
+                    // include them, and before its watch can see them change.
+                    remote.declareRoots([remote.homePath + "/.claude"] + urls.map(\.path))
+                    remote.refresh { self.rail_reloadAfterAdd() }
+                    remote.startWatching()
+                } else {
+                    self.reload()
+                }
+            }
+            presentAsSheet(picker)
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

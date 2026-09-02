@@ -142,13 +142,32 @@ enum T {
 final class StubProvider: FileProvider {
     let id: String
     init(id: String) { self.id = id }
+
+    /// What the seam actually did, so a test can assert on round trips rather
+    /// than on wall-clock time.
+    private(set) var existsCalls = 0
+    private(set) var prefetchCalls = 0
+    private(set) var prefetched: [String] = []
+    /// Milliseconds of pretend latency on every single-path question. A remote
+    /// provider answers these over a wire; anything that assumed the filesystem
+    /// was instant shows up here as a test that takes far too long.
+    var latencyMS: UInt32 = 0
+    func resetCounts() { existsCalls = 0; prefetchCalls = 0; prefetched = [] }
     var displayName: String { id }
     var homePath: String { Paths.home }
     var isLocal: Bool { false }
     var isConnected: Bool { true }
     private let inner = LocalProvider()
     func list(_ p: String) -> [FSEntry] { inner.list(p) }
-    func exists(_ p: String) -> Bool { inner.exists(p) }
+    func exists(_ p: String) -> Bool {
+        existsCalls += 1
+        if latencyMS > 0 { usleep(latencyMS * 1000) }
+        return inner.exists(p)
+    }
+    func prefetchExistence(_ paths: [String]) {
+        prefetchCalls += 1
+        prefetched.append(contentsOf: paths)
+    }
     func isDirectory(_ p: String) -> Bool { inner.isDirectory(p) }
     func fingerprint(_ p: String) -> (mtime: Double, size: Int)? { inner.fingerprint(p) }
     func contents(_ p: String) -> Data? { inner.contents(p) }

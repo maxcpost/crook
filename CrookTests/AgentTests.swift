@@ -232,3 +232,53 @@ extension AgentTests {
         T.ok("X-06  and it does not claim to be running", !t.isRunning)
     }
 }
+
+// MARK: - the cost of being far away
+
+extension AgentTests {
+
+    /// Nothing here needs a network. What it checks is that the code paths which
+    /// run per keystroke and per rail rebuild ask the filesystem in BATCHES,
+    /// because the difference between one round trip and forty is the
+    /// difference between usable and not.
+    static func latency() {
+        T.suite("remote — asking once instead of forty times")
+
+        let stub = StubProvider(id: "ssh:pretend")
+        Providers.use(stub)
+        defer { Providers.useLocal() }
+
+        let doc = """
+        ---
+        name: deploy
+        description: deploys things
+        ---
+
+        # Deploy
+
+        Read /Users/nobody-here/one/a.md and /Users/nobody-here/two/b.md first.
+        Then ~/Notes/three/c.md, ~/Notes/four/d.md and /Users/nobody-here/five/e.md.
+        Templates live at /Users/nobody-here/six/f.md and /Users/nobody-here/seven/g.md.
+        """
+
+        stub.resetCounts()
+        _ = PathScanner.scan(doc, url: nil, roleGated: false)
+
+        T.eq("L-01  the scan prefetches exactly once", stub.prefetchCalls, 1)
+        T.ok("L-02  and asks about every path in that one call", stub.prefetched.count >= 7,
+             "\(stub.prefetched.count) paths")
+        T.ok("L-03  tilde paths are expanded against the FAR machine's home",
+             stub.prefetched.contains { $0.hasPrefix(stub.homePath + "/Notes") })
+
+        // The real cost check. With latency on every individual question, a
+        // scan that batches stays fast and one that does not crawls.
+        stub.resetCounts()
+        stub.latencyMS = 12
+        let began = Date()
+        _ = PathScanner.scan(doc, url: nil, roleGated: false)
+        let took = Date().timeIntervalSince(began)
+        stub.latencyMS = 0
+        T.ok("L-04  a document's worth of links stays under a second at 12 ms a hop",
+             took < 1.0, String(format: "%.2fs across %d single lookups", took, stub.existsCalls))
+    }
+}

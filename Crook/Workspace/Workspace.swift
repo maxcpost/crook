@@ -18,7 +18,16 @@ final class Workspace {
     /// derived from them, so a breadcrumb can never disagree with the tree.
     private(set) var roots: [Node] = []
 
-    private let defaultsKey = "CrookImportedProjects"
+    /// Projects are remembered PER MACHINE.
+    ///
+    /// A path only means something on the machine it lives on, and the mini's
+    /// projects appearing in the local sidebar as broken entries would be worse
+    /// than useless. The unsuffixed key is this Mac's, so everything imported
+    /// before machines existed keeps working untouched.
+    private var defaultsKey: String {
+        let p = Providers.current
+        return p.isLocal ? "CrookImportedProjects" : "CrookImportedProjects::\(p.id)"
+    }
 
     // MARK: - node
 
@@ -360,6 +369,14 @@ final class Workspace {
         let entries = p.list(dir.path)
         guard !entries.isEmpty else { return [] }
         let imported = Set(importedURLs().map(\.path))
+
+        // Every candidate needs an isDirectory answer, and over a link that is
+        // one round trip each — thirty slugs would be thirty waits. Ask once.
+        p.prefetchExistence(entries.compactMap { e -> String? in
+            let slug = (e.path as NSString).lastPathComponent
+            guard slug.hasPrefix("-") else { return nil }
+            return Self.decodeSlug(slug) ?? slug.replacingOccurrences(of: "-", with: "/")
+        })
         return entries.compactMap { entry -> (URL, Date)? in
             let e = URL(fileURLWithPath: entry.path)
             // slug -Users-max-Documents-Foo  ->  /Users/max/Documents/Foo
