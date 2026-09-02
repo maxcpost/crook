@@ -75,6 +75,18 @@ final class WorkspaceWindowController: NSWindowController {
 
         rail.onOpen = { [weak self] url in self?.retarget(to: url) }
         editor.showEmptyState(true) { [weak self] in self?.rail.beginAddProject() }
+
+        // Re-read the tree when Crook comes forward.
+        //
+        // Without this the rail only refreshed on launch, on opening a file, and
+        // after adding a project — so the normal loop of this whole product,
+        // leaving Crook to let Claude Code work and coming back, showed stale
+        // change marks until you happened to click something. The marks are
+        // computed from mtime and a content hash, so a rebuild is the only thing
+        // that surfaces them.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appBecameActive),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
         dumpViews()
     }
 
@@ -109,6 +121,19 @@ final class WorkspaceWindowController: NSWindowController {
     }
 
     /// Swap the document under this window without disturbing the rail.
+    /// Throttled: activation fires for every ⌘-tab, and a full tree walk on each
+    /// one would be work nobody asked for. A second is far below the interval at
+    /// which an agent rewrites files and far above the rate a person switches
+    /// windows by accident.
+    private var lastActiveRefresh: TimeInterval = 0
+
+    @objc private func appBecameActive() {
+        let now = Date().timeIntervalSince1970
+        guard now - lastActiveRefresh > 1.0 else { return }
+        lastActiveRefresh = now
+        rail.reload()
+    }
+
     func retarget(to url: URL) {
         guard !isRetargeting else { return }
         let current = (document as? CrookDocument)?.fileURL

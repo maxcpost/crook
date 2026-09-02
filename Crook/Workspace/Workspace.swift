@@ -69,6 +69,12 @@ final class Workspace {
         let name = url.lastPathComponent
         if name == "settings.local.json" { return false }   // machine-written exhaust
         if name == "settings.json" { return true }
+        // Project-scoped MCP server config. Hand-written, committed to git, and
+        // the file that keeps two machines configured identically — squarely a
+        // file that steers Claude. ~/.claude.json is deliberately NOT here: it
+        // is machine-written state, excluded for the same reason
+        // settings.local.json is.
+        if name == ".mcp.json" { return true }
         if name == "CLAUDE.md" || name == "AGENTS.md" || name == "MEMORY.md" { return true }
         if name == "SKILL.md" || name == "README.md" || name == "CURATION.md" { return true }
         let ext = url.pathExtension.lowercased()
@@ -211,18 +217,28 @@ final class Workspace {
         return Node(kind: .project, name: root.lastPathComponent, url: root, children: kids)
     }
 
+    /// The only hidden entries Crook will descend into or show. `.claude` is
+    /// reached explicitly elsewhere, but a nested one has to survive the filter.
+    static let visibleDotfiles: Set<String> = [".claude", ".mcp.json"]
+
     /// Recursive scan, Claude files only, excluded directories never entered.
     private func scan(_ dir: URL, depth: Int) -> [Node] {
         guard depth < 6 else { return [] }
         let fm = FileManager.default
+        // Not skipsHiddenFiles: .mcp.json is a dotfile and a file Claude reads.
+        // Hidden entries are filtered below instead, so one specific dotfile can
+        // be let through without opening the door to .DS_Store and .git.
         guard let entries = try? fm.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: []
         ) else { return [] }
 
         var folders: [Node] = []
         var files: [Node] = []
 
         for e in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            let leaf = e.lastPathComponent
+            // Everything hidden stays hidden except the handful Claude reads.
+            if leaf.hasPrefix("."), !Self.visibleDotfiles.contains(leaf) { continue }
             let isDir = (try? e.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             if isDir {
                 if Self.excludedDirs.contains(e.lastPathComponent) { continue }
