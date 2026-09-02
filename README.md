@@ -61,6 +61,19 @@ read by a machine, so a diff you did not author is not cosmetic noise. macOS
 smart quotes and dash substitution are disabled inside Crook for the same
 reason.
 
+**Works on another Mac over SSH.** If Claude Code runs on a headless Mac mini
+you reach over Tailscale, Crook can edit that machine's files as if they were
+local — the same tree, the same reach line, the same change marks. Click
+**Connect to a Machine…** and type the name you would use with `ssh`. Crook
+uses your existing SSH configuration, so an alias from `~/.ssh/config` is
+enough, and it installs a small helper on the far machine by itself.
+
+This is not a mounted disk, and that is deliberate. Mounting gets two things
+wrong that cannot be fixed: paths inside your files get checked against the
+*wrong* machine, so live links read as broken, and no mounted filesystem can
+report a change another host made — which is the whole point of the change
+marks. A helper on the far side answers both correctly.
+
 **Writes nothing into your projects.** No dotfiles, no sidecars, no index. What
 Crook remembers lives in its own container.
 
@@ -75,6 +88,9 @@ Crook remembers lives in its own container.
 | `⌘R` | Reload from disk, discarding your edits |
 | `⌘D` | Show what changed since you last opened this file |
 | `⌘+` `⌘−` `⌘0` | Bigger, smaller, actual size |
+
+The machine you are looking at is named in the bottom-left of the sidebar, and
+in the window subtitle when it is not this Mac. One window is one machine.
 
 Click **Add a Project…** in the sidebar and pick any folder with a `.claude`
 directory or a `CLAUDE.md`. Nothing is scanned or added without you choosing it.
@@ -113,6 +129,31 @@ which is short enough to read and does exactly what it says.
 
 ---
 
+## Connecting to another Mac
+
+You need `ssh` to that machine to work from a terminal first — Crook runs the
+system `ssh` and adds nothing of its own. On the far machine that means
+**System Settings ▸ General ▸ Sharing ▸ Remote Login**.
+
+Then in Crook, **Connect to a Machine…** and give it the host name. On first
+connect Crook copies a ~150 KB helper to `~/.crook/` on that machine and runs
+it over the SSH session; there is nothing to install by hand and nothing
+listening on a port. If your key has a passphrase, Crook asks for it only when
+`ssh` says it needs one.
+
+Worth adding to your `~/.ssh/config`, if the machine is one you keep a terminal
+open to anyway:
+
+```
+Host mac-mini
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+```
+
+That lets Crook share a connection that is already open instead of building its
+own — no second handshake and no second authentication.
+
 ## How it is put together
 
 An AppKit shell hosting a `WKWebView` that runs CodeMirror 6.
@@ -127,6 +168,12 @@ Markdown renders live, Typora-style: syntax marks hide as you type and reappear
 when the caret enters the block. There is no preview pane and no mode switch.
 
 AppKit owns every control. The web view contains none, in any state.
+
+Every filesystem call goes through one small protocol with two implementations,
+local and SSH-backed, which is what lets the same code serve both machines. The
+remote half is tested against the real helper binary over a pipe — including
+the whole fixture corpus read back byte-for-byte — so it does not need a second
+Mac to verify.
 
 ---
 
