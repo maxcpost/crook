@@ -125,6 +125,23 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     func data() throws -> Data { try ByteCodec.encode(text, profile: profile) }
 
+    /// Drain CodeMirror's per-frame edit batch before a save reads the buffer.
+    ///
+    /// Edits reach Swift after a requestAnimationFrame plus IPC, so a save
+    /// within ~16 ms of a keystroke used to encode text that was missing those
+    /// characters. evaluateJavaScript on the main thread with a run-loop spin
+    /// is not elegant, but a save is rare, bounded, and must see everything the
+    /// user typed. Bounded at 100 ms so a wedged web view cannot hang a save.
+    func flushPendingEdits() {
+        guard isReady, let wv = webView else { return }
+        var done = false
+        wv.evaluateJavaScript("CrookEditor.flushNow()") { _, _ in done = true }
+        let deadline = Date().addingTimeInterval(0.1)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.005))
+        }
+    }
+
     func markClean() { dirty = false; onDirty?(false) }
 
     func pushChangedLines(_ lines: [Int]) {

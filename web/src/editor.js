@@ -386,6 +386,16 @@ function schedule(view) {
   requestAnimationFrame(() => flush(view))
 }
 
+/// Drain any batched edit immediately. Called from Swift before a save reads
+/// the canonical buffer: edits normally reach Swift only after a
+/// requestAnimationFrame plus IPC, so a save within ~16 ms of a keystroke
+/// encoded a buffer that was missing those characters.
+function flushNow() {
+  if (!view) return 0
+  flush(view)
+  return view.state.doc.length
+}
+
 let lastSelection = -1
 const bridge = ViewPlugin.fromClass(class {
   constructor(view) { this.view = view }
@@ -573,6 +583,12 @@ function mount(parent) {
         // defaultKeymap minus anything that writes characters we did not type.
         Prec.low(keymap.of(defaultKeymap.concat(historyKeymap))),
         EditorView.lineWrapping,
+        // Belt and braces with the AppKit-side defaults in main.swift. These
+        // are web attributes and do not govern macOS's own substitution layer,
+        // but they cost nothing and close the browser half.
+        EditorView.contentAttributes.of({
+          spellcheck: "false", autocorrect: "off", autocapitalize: "off",
+        }),
       ],
     }),
   })
@@ -667,4 +683,4 @@ function boot() {
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot)
 else boot()
 
-export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, setScale, zoomIn, zoomOut, zoomReset }
+export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, flushNow, setScale, zoomIn, zoomOut, zoomReset }

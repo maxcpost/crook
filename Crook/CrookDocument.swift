@@ -40,6 +40,8 @@ final class CrookDocument: NSDocument {
         // path — silently replacing the contents of a file you were editing
         // with the contents of the one you opened after it.
         if let b = editor?.bridge, editor?.owner === self {
+            // Everything typed must be in the buffer before it is encoded.
+            b.flushPendingEdits()
             return try b.data()
         }
         return try ByteCodec.encode(loadedText, profile: loadedProfile)
