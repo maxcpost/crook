@@ -1,0 +1,86 @@
+/* Crook — paper and ink.
+ *
+ * The rail is an NSVisualEffectView: translucent, and it takes its cast from
+ * whatever is behind the window. That is the native, deferential behaviour and
+ * it stays. So the document has to join the same family rather than fight it —
+ * every neutral here is warm, biased toward paper rather than toward screen.
+ * A cool #1B1B1E ground beside a warm translucent rail reads as two apps.
+ *
+ * One accent, and it is the highlighter. Nothing else in the document is
+ * coloured, so when yellow appears it means exactly one thing: you selected
+ * this.
+ */
+:root {
+  --c-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --c-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  /* Light — warm paper, warm ink. Never #FFF: paper is not a lightbulb. */
+  --c-paper:   #FCFBF7;
+  --c-ink:     #1F1E1B;
+  --c-ink-2:   #6B6660;
+  --c-marker:  #ADA79C;
+  --c-code:    #4C4941;
+  --c-codebg:  rgba(31, 30, 27, 0.055);
+  --c-rule:    #E5E1D7;
+  --c-accent:  #B8862B;
+
+  /* The highlighter. Dark ink on yellow, because that is what a marker does. */
+  --c-hl:      #FFE885;
+  --c-hl-ink:  #1F1E1B;
+  --c-dead:    #B4453A;
+  --c-changed: #C79A2E;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Warm charcoal, not blue-black — it has to sit beside the rail's material. */
+    --c-paper:   #1D1C19;
+    --c-ink:     #ECE9E2;
+    --c-ink-2:   #9B958A;
+    --c-marker:  #625D53;
+    --c-code:    #C4BFB4;
+    --c-codebg:  rgba(236, 233, 226, 0.07);
+    --c-rule:    #33302B;
+    --c-accent:  #D8B25C;
+
+    /* Dimmer and slightly deeper so it does not glare, but still unmistakably
+     * a highlighter. The ink stays dark: that inversion is the whole gesture. */
+    --c-hl:      #EFCB57;
+    --c-hl-ink:  #1A1916;
+    --c-dead:    #D9705F;
+    --c-changed: #D8B25C;
+  }
+}
+
+/* Type scale and measure, both driven from one place so the table column
+ * budget and the text column can never disagree. */
+:root {
+  --c-scale: 1;
+  --c-measure: 88ch;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--c-paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root { height: 100vh; }
+
+/* Native selection, not CodeMirror's drawSelection layer. drawSelection paints
+ * behind the text, so the text colour cannot change and light-on-pale is
+ * unreadable. Native ::selection sets both. */
+/* WebKit will not inherit ::selection colour down into CodeMirror's syntax
+ * spans from a bare ::selection rule — each element that paints its own colour
+ * needs to match. Without the descendant selectors the band appears but the
+ * ink stays light, which is the unreadable case. */
+::selection,
+.cm-content ::selection,
+.cm-line::selection,
+.cm-line *::selection {
+  background: var(--c-hl);
+  color: var(--c-hl-ink);
+  -webkit-text-fill-color: var(--c-hl-ink);
+}

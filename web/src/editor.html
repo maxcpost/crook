@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- D-59: Crook makes zero network requests. Enforced here, not just promised. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src crook://local; style-src crook://local 'unsafe-inline'; font-src crook://local; img-src crook://local data:; connect-src 'none'">
+<title>Crook</title>
+<link rel="stylesheet" href="crook://local/theme.css">
+<div id="root"></div>
+<script src="crook://local/editor.js"></script>

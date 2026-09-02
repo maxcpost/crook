@@ -1,0 +1,301 @@
+import AppKit
+
+/// One window: a rail that persists, and a document that swaps inside it.
+///
+/// NSDocument binds a document to its window controllers, so navigating to a
+/// file used to mean a whole new window — with a duplicate rail — and a tab bar
+/// to manage the pile. No Mac app works that way: Finder, Xcode and Mail keep
+/// one window whose sidebar persists while content changes in the pane.
+///
+/// So the window controller is the durable thing here, and documents are
+/// detached and attached beneath it.
+final class WorkspaceWindowController: NSWindowController {
+
+    /// There is exactly one workspace window. The rail is the durable surface;
+    /// documents come and go beneath it.
+    static let shared = WorkspaceWindowController()
+
+    let rail = RailViewController()
+    let editor = EditorViewController()
+
+    private var isRetargeting = false
+    /// Resolved once per document; the keystroke path never touches the disk.
+    private var reachContext: ReachClassifier.Context?
+
+    /// Whether the bytes on disk still match what we loaded.
+    enum SyncState { case inSync, reloaded, conflict, vanished }
+    private var syncState: SyncState = .inSync { didSet { refreshProxyIcon() } }
+    private var settleBack: DispatchWorkItem?
+
+    private lazy var watcher = FileWatcher { [weak self] change in
+        self?.handleExternalChange(change)
+    }
+
+    init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 740),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        super.init(window: window)
+
+        let split = NSSplitViewController()
+        split.splitView.dividerStyle = .thin
+
+        let railItem = NSSplitViewItem(viewController: rail)
+        railItem.minimumThickness = 232
+        railItem.maximumThickness = 340
+        railItem.canCollapse = true
+        railItem.holdingPriority = NSLayoutConstraint.Priority(260)
+
+        let editorItem = NSSplitViewItem(viewController: editor)
+        editorItem.minimumThickness = 420
+
+        split.addSplitViewItem(railItem)
+        split.addSplitViewItem(editorItem)
+
+        // No toolbar. An NSToolbar with zero items still reserves a band, and
+        // stacked under the title and a tab bar it produced three rows of chrome
+        // carrying nothing. The title row alone is enough.
+        window.toolbar = nil
+        // No window tabs. Navigation retargets this window, so a second document
+        // never opens and the tab bar has nothing to show.
+        window.tabbingMode = .disallowed
+        // The hairline across the top of the sidebar is AppKit's titlebar
+        // separator. With a flush sidebar carrying its own material there is
+        // nothing for it to separate.
+        window.titlebarSeparatorStyle = .none
+        window.contentViewController = split
+        window.setContentSize(NSSize(width: 1120, height: 740))
+        window.minSize = NSSize(width: 720, height: 460)
+        // Documents must not restore their own windows — each restored one
+        // would build another rail. The frame is remembered; the pile is not.
+        window.isRestorable = false
+        window.setFrameAutosaveName("CrookWorkspace")
+        window.center()
+
+        rail.onOpen = { [weak self] url in self?.retarget(to: url) }
+        editor.showEmptyState(true) { [weak self] in self?.rail.beginAddProject() }
+        dumpViews()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    func dumpViews() {
+        guard ProcessInfo.processInfo.environment["CROOK_DUMP_VIEWS"] != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let w = self?.window, let root = w.contentView else { return }
+            NSLog("Crook: --- view dump; window frame \(w.frame) contentLayoutRect \(w.contentLayoutRect)")
+            NSLog("Crook: titlebarSeparatorStyle=\(w.titlebarSeparatorStyle.rawValue) toolbar=\(String(describing: w.toolbar))")
+            func walk(_ v: NSView, _ depth: Int) {
+                let pad = String(repeating: "  ", count: depth)
+                var bg = "-"
+                if let l = v.layer, let c = l.backgroundColor { bg = "\(c)" }
+                let border = v.layer.map { "border=\($0.borderWidth)" } ?? ""
+                NSLog("Crook: \(pad)\(type(of: v)) frame=\(v.frame) wantsLayer=\(v.wantsLayer) bg=\(bg) \(border) hidden=\(v.isHidden) alpha=\(v.alphaValue)")
+                for s in v.subviews where s.frame.height < 6 || depth < 4 { walk(s, depth + 1) }
+            }
+            walk(root, 0)
+            // anything short and wide near the top of the sidebar is the culprit
+            NSLog("Crook: --- candidate hairlines (height <= 2)")
+            func hairlines(_ v: NSView) {
+                if v.frame.height > 0 && v.frame.height <= 2 && v.frame.width > 100 {
+                    let inWindow = v.convert(v.bounds, to: nil)
+                    NSLog("Crook: HAIRLINE \(type(of: v)) windowRect=\(inWindow) bg=\(String(describing: v.layer?.backgroundColor))")
+                }
+                v.subviews.forEach(hairlines)
+            }
+            hairlines(root)
+        }
+    }
+
+    /// Swap the document under this window without disturbing the rail.
+    func retarget(to url: URL) {
+        guard !isRetargeting else { return }
+        let current = (document as? CrookDocument)?.fileURL
+        guard current != url else { editor.focusEditor(); return }
+
+        isRetargeting = true
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: false) { [weak self] doc, _, err in
+            guard let self else { return }
+            defer { self.isRetargeting = false }
+            if let err {
+                NSLog("Crook: retarget \(url.lastPathComponent) failed: \(err)")
+                return
+            }
+            guard let next = doc as? CrookDocument else { return }
+            guard next !== self.document as? CrookDocument else { return }
+
+            if let previous = self.document as? CrookDocument {
+                previous.detachFromEditor()
+                previous.removeWindowController(self)
+                // Let a clean, now-windowless document go. A dirty one stays
+                // alive so its unsaved edits are still recoverable.
+                if previous.windowControllers.isEmpty && !previous.isDocumentEdited {
+                    previous.close()
+                }
+            }
+            next.addWindowController(self)
+            next.attach(to: self.editor)
+            self.syncTitle(url)
+            // Reload so the delta on the file just opened clears; expansion and
+            // selection are preserved across it.
+            self.rail.reload()
+            self.rail.selectFile(url)
+            self.editor.focusEditor()
+        }
+    }
+
+    /// "Atlas ▸ CLAUDE.md", not "CLAUDE.md".
+    ///
+    /// 21 of the fixture's files are named CLAUDE.md and 34 are SKILL.md — the
+    /// filename alone identifies almost nothing in this corpus. The proxy icon
+    /// still carries the full path for anyone who wants it.
+    func syncTitle(_ url: URL?) {
+        editor.showEmptyState(url == nil) { [weak self] in self?.rail.beginAddProject() }
+        window?.representedURL = url
+        watcher.watch(url)
+        syncState = .inSync
+        synchronizeWindowTitleWithDocumentName()
+        reachContext = url.map { ReachClassifier.Context.resolve($0) }
+        refreshReach()
+    }
+
+    /// Reached By. NSWindow.subtitle does not add a line: on a .titled window
+    /// with no toolbar, AppKit concatenates title and subtitle into the single
+    /// titlebar field, measured 32pt with and without. Zero pixels, zero new
+    /// surfaces, so the two-persistent-affordance budget is unchanged.
+    /// The reach sentence lives in the editor's bottom-right readout, not in
+    /// the titlebar. The title answers "which file"; the readout answers "why
+    /// does Claude read it". Two different questions, and stacking them made
+    /// one long line that was hard to scan for either.
+    func refreshReach() {
+        guard let ctx = reachContext else { editor.setReach(""); return }
+        editor.setReach(ReachClassifier.subtitle(ctx, text: editor.bridge.text as String))
+    }
+
+    /// NSWindowController regenerates the title from the document, so setting
+    /// window.title directly is overwritten. This is the hook that sticks.
+    // MARK: - the proxy icon says whether you are looking at the current bytes
+
+    /// The default proxy icon is a picture of a page — it says "this is a file",
+    /// which you knew. Replaced with the one thing about the open document that
+    /// changes and matters: whether the bytes on disk still match what you are
+    /// reading. representedURL stays set, so ⌘-click for the path menu and
+    /// drag-to-Finder are unaffected.
+    private func refreshProxyIcon() {
+        guard let button = window?.standardWindowButton(.documentIconButton) else { return }
+        let symbol: String, tint: NSColor, help: String
+        switch syncState {
+        case .inSync:
+            symbol = "circle.fill"; tint = .tertiaryLabelColor
+            help = "You are reading the bytes that are on disk"
+        case .reloaded:
+            symbol = "arrow.trianglehead.2.clockwise"; tint = .systemYellow
+            let d = lastDelta.map { " · \(SeenStore.format($0)) lines" } ?? ""
+            help = "Claude Code rewrote this file\(d) · reloaded"
+        case .conflict:
+            symbol = "exclamationmark.triangle.fill"; tint = .systemRed
+            help = "Changed on disk while you were editing · ⌘R takes the disk version"
+        case .vanished:
+            symbol = "questionmark.circle"; tint = .systemRed
+            help = "This file is no longer on disk"
+        }
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            .applying(.init(paletteColors: [tint]))
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: help)?
+            .withSymbolConfiguration(cfg)
+        button.toolTip = help
+    }
+
+    private func handleExternalChange(_ change: FileWatcher.Change) {
+        guard let doc = document as? CrookDocument, let url = doc.fileURL else { return }
+        if case .vanished = change {
+            syncState = .vanished
+            // Keep watching. A branch switch or a delete-then-rewrite removes
+            // the path for longer than the grace period, and without this the
+            // watcher stays dead for the rest of the session.
+            watcher.watch(url)
+            return
+        }
+
+        if doc.isDocumentEdited {
+            // Never silently discard the user's edits.
+            syncState = .conflict
+            return
+        }
+        // Clean buffer: reload and keep the reader's place, then say WHICH
+        // lines moved. "Something changed" is not reviewable; "these four lines
+        // changed" is, and reviewing agent writes is the actual job here.
+        guard let data = FileManager.default.contents(atPath: url.path),
+              data != doc.currentBytes() else { return }
+        let before = doc.currentText()
+        doc.reloadFromDisk()
+        let after = doc.currentText()
+
+        if let d = LineDiff.between(before, after), !d.isEmpty {
+            let lines = Array(d.firstChanged...max(d.firstChanged, d.lastChanged))
+            editor.bridge.pushChangedLines(lines)
+            lastDelta = d.delta
+        } else {
+            lastDelta = 0
+        }
+        syncState = .reloaded
+        // NO TIMER. The mark holds until the reader engages with the document —
+        // a six-second decay expires precisely while they are in the terminal,
+        // which is the entire situation this exists for.
+    }
+
+    /// The reader has looked. Same act of ratification the rail uses.
+    func markEngaged() {
+        // .conflict must clear too. It did not, so ⌘R — the exit the tooltip
+        // itself advertises — took the disk version and left the red triangle
+        // up forever.
+        guard syncState == .reloaded || syncState == .conflict else { return }
+        syncState = .inSync
+        lastDelta = nil
+    }
+
+    private var lastDelta: Int?
+
+    /// Show what changed since this file was last opened here. Presented
+    /// automatically when you open a file the agent has rewritten in the
+    /// meantime — that is the moment the information is worth something — and
+    /// available afterwards from View ▸ Show Changes.
+    @objc func showChanges(_ sender: Any?) {
+        showChanges(for: nil)
+    }
+
+    /// - Parameter expected: when non-nil, do nothing unless this is still the
+    ///   open document. The auto-present is deferred half a second, and clicking
+    ///   a second file inside that window used to pop the change view for the
+    ///   wrong file.
+    func showChanges(for expected: URL?) {
+        guard let doc = document as? CrookDocument, let url = doc.fileURL else { return }
+        if let expected, expected != url { return }
+        guard let old = pendingSnapshot ?? SeenStore.shared.snapshot(for: url) else {
+            NSSound.beep(); return
+        }
+        let new = doc.currentText()
+        guard old != new else { NSSound.beep(); return }
+        editor.showDiff(old: old, new: new,
+                        title: Workspace.shared.breadcrumb(for: url).joined(separator: " ▸ "))
+    }
+
+    /// The snapshot as it was BEFORE this open overwrote it. markSeen runs on
+    /// attach, so by the time anything can ask, the stored snapshot is already
+    /// the new content — this holds the previous one for exactly one open.
+    private var pendingSnapshot: String?
+
+    func noteSnapshotBeforeOpen(_ text: String?) { pendingSnapshot = text }
+
+    override func windowTitle(forDocumentDisplayName displayName: String) -> String {
+        guard let url = (document as? NSDocument)?.fileURL else { return displayName }
+        let crumbs = Workspace.shared.breadcrumb(for: url)
+        if crumbs.count > 1 { return crumbs.joined(separator: " ▸ ") }
+        // Not in the workspace tree — a file opened from Finder, say.
+        if let context = Workspace.shared.contextLabel(for: url) {
+            return "\(context) ▸ \(displayName)"
+        }
+        return displayName
+    }
+}
