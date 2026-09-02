@@ -43,5 +43,20 @@ xcrun swiftc -target arm64-apple-macos26.0 \
   $(find Crook -name '*.swift' | sort | tr '\n' ' ') \
   -o "$APP/Contents/MacOS/Crook"
 
-codesign --force --sign - "$APP" 2>/dev/null || true
+# Strip extended attributes before signing. The copy steps above leave
+# com.apple.FinderInfo and com.apple.provenance behind, and codesign refuses
+# with "resource fork, Finder information, or similar detritus not allowed".
+# This used to be suppressed with 2>/dev/null || true, so every build shipped
+# an unsigned bundle whose executable claimed to have sealed resources —
+# which Gatekeeper rejects outright, worse than being plainly unsigned.
+sign_bundle() {
+  xattr -cr "$APP" 2>/dev/null || true
+  codesign --force --sign - --timestamp=none "$APP" 2>&1
+}
+# Retry once: anything touching the bundle between the strip and the sign
+# re-adds com.apple.FinderInfo and codesign then refuses. (com.apple.provenance
+# survives xattr -cr — it is system-managed — but does not block signing.)
+sign_bundle >/dev/null 2>&1 || sign_bundle
+codesign --verify --strict "$APP" >/dev/null 2>&1 \
+  || { echo "!! signature invalid — the app will not open on another Mac"; exit 1; }
 echo "==> built $APP"
