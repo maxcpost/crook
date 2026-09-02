@@ -150,25 +150,50 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                                arguments: ["l": lines], in: nil, in: .page) { _ in }
     }
 
-    /// Push dead-path verdicts to the editor. Swift owns the filesystem, so
-    /// this cannot be computed in the web view. Draw nothing when the scan
-    /// finds nothing — a clean file renders zero extra pixels.
+    /// Push dead-path verdicts and frontmatter defects to the editor. Swift
+    /// owns the filesystem, so neither can be computed in the web view. Draw
+    /// nothing when both scans find nothing — a clean file renders zero extra
+    /// pixels.
+    ///
+    /// This is also the trailing-delay slot the frontmatter check needs. It
+    /// runs on load and 0.6 s after edits settle, never per keystroke, which
+    /// keeps `Frontmatter`'s measured sub-11 µs keystroke path untouched.
     func pushDiagnostics(for url: URL?) {
         guard isReady, let wv = webView else { return }
-        let dead = PathScanner.scan(text as String, url: url)
-        let payload: [[String: Any]] = dead.map { d in
+        let doc = text as String
+        let dead = PathScanner.scan(doc, url: url)
+        var marks: [(from: Int, to: Int, title: String)] = dead.map { d in
             // The teaching half. "Broken" is a dead end; "exists up to
             // /Users" says a home directory was renamed and absolute paths do
             // not follow — which generalises to the other sixteen.
             let where_ = d.existsUpTo.map { "Exists up to \($0)" } ?? "No part of this path exists"
-            return ["from": d.from, "to": d.to, "title": "Not on this machine · \(where_)"]
+            return (d.from, d.to, "Not on this machine · \(where_)")
         }
+
+        // Frontmatter that does not parse. Only where Claude Code parses it:
+        // in a memory file the same `---` block is prose.
+        var problems: [FrontmatterValidator.Problem] = []
+        if let url, ReachClassifier.parsesFrontmatter(url) {
+            problems = FrontmatterValidator.validate(doc)
+            marks += problems.map { ($0.from, $0.to, $0.title) }
+        }
+
+        // CM6's RangeSetBuilder THROWS on an out-of-order add, and a throw
+        // inside applyDiagnostics takes every mark down with it — including
+        // the dead paths that were fine. Frontmatter problems sit at the top
+        // of the document and dead paths anywhere, so appending them is
+        // exactly the out-of-order case. Sort before it leaves Swift.
+        marks.sort { ($0.from, $0.to) < ($1.from, $1.to) }
+        let payload: [[String: Any]] = marks.map { ["from": $0.from, "to": $0.to, "title": $0.title] }
+
         wv.callAsyncJavaScript("CrookEditor.applyDiagnostics(d);",
                                arguments: ["d": payload], in: nil, in: .page) { _ in }
         lastDead = dead
+        lastProblems = problems
     }
 
     private(set) var lastDead: [PathScanner.DeadPath] = []
+    private(set) var lastProblems: [FrontmatterValidator.Problem] = []
 
     // MARK: - crash recovery
 

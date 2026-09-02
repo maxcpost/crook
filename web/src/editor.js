@@ -68,7 +68,10 @@ const diagnostics = StateField.define({
     for (const e of tr.effects) {
       if (e.is(setDiagnostics)) {
         const b = new RangeSetBuilder()
-        for (const d of e.value) {
+        // RangeSetBuilder THROWS on an out-of-order add, and a throw here takes
+        // every mark down, not just the offending one. Swift sorts; this is the
+        // belt that means a future caller which forgets cannot blank the channel.
+        for (const d of [...(e.value || [])].sort((x, y) => x.from - y.from || x.to - y.to)) {
           if (d.from >= 0 && d.to > d.from && d.to <= tr.state.doc.length) b.add(d.from, d.to, deadRefWith(d.title))
         }
         value = b.finish()

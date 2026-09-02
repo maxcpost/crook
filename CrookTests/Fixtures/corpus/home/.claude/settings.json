@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": ["Bash(git status)", "Bash(git diff:*)"],
+    "deny": ["Bash(rm -rf:*)"]
+  },
+  "env": {
+    "EDITOR_THEME": "quiet"
+  }
+}

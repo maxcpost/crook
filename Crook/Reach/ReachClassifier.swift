@@ -51,6 +51,26 @@ enum ReachClassifier {
     /// Deprecated name kept for the classifier's own use.
     static func hasRole(_ url: URL) -> Bool { readsInstructions(url) }
 
+    /// Does Claude Code PARSE this file's frontmatter as YAML?
+    ///
+    /// Strictly narrower than readsInstructions. A memory file is read as
+    /// content top to bottom, so a `---` block at its head is text and a
+    /// complaint about its YAML would be a complaint about nothing. Same for a
+    /// package's supporting files — which is most of the markdown on this
+    /// machine, and which is exactly where a horizontal rule under a heading
+    /// lives. Only these four roles have a header that gets parsed.
+    static func parsesFrontmatter(_ url: URL) -> Bool {
+        switch Context.resolve(url).pathRole {
+        case .personalSkill, .projectSkill, .unscannedSkill,
+             .personalCommand, .projectCommand,
+             .personalRule, .projectRule, .unreadablePathsRule,
+             .subagent, .unnamedSubagent:
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - context
 
     /// The filesystem half of classification, resolved ONCE per document.
@@ -94,9 +114,37 @@ enum ReachClassifier {
         // The common case: the path settles it and the buffer is never read.
         guard ctx.readsFrontmatter else { return sentence(ctx.pathRole) }
         let fm = Frontmatter(text)
+        // The consequence here is about how the file is READ, which is what
+        // this readout is for. It also has to REPLACE the frontmatter-derived
+        // sentence rather than extend it: refine() sees no fields in a block
+        // Claude Code never opens, so an agent file whose second line is
+        // `name: reviewer` would otherwise read "no name: field, so Claude
+        // Code skips it" — a false statement about the file, which is the one
+        // thing this sentence must never make.
+        if fm.misplaced { return displacedSentence(ctx.pathRole) }
         let base = sentence(refine(ctx.pathRole, fm: fm))
         guard !base.isEmpty else { return "" }
         return base + modifiers(for: ctx.url, fm: fm)
+    }
+
+    /// Claude Code reads frontmatter ONLY when the opening `---` is the file's
+    /// first line. A blank line, a stray space or a BOM in front of it and the
+    /// whole file — markers included — is content. Nothing reports this, and
+    /// the file looks completely normal.
+    static let displacedClause =
+        " · frontmatter is not the first line, so Claude Code reads the whole file as content"
+
+    private static func displacedSentence(_ role: Role) -> String {
+        // Lead with the half the PATH still guarantees, then the consequence.
+        switch role {
+        case .personalSkill(let c): return "Personal skill · /\(c)" + displacedClause
+        case .projectSkill(let c):  return "Project skill · /\(c)" + displacedClause
+        case .unscannedSkill:       return sentence(.unscannedSkill) + displacedClause
+        case .personalRule:         return "Personal rule" + displacedClause
+        case .projectRule, .unreadablePathsRule: return "Project rule" + displacedClause
+        case .subagent, .unnamedSubagent: return "Subagent" + displacedClause
+        default: return sentence(role)
+        }
     }
 
     /// The only frontmatter-dependent refinements. Everything else is path.

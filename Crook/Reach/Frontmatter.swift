@@ -63,15 +63,7 @@ struct Frontmatter {
             self.bodyStore = nil
             self.scalars = [:]
             // A `---` block that exists but is not at byte 0: the silent case.
-            var found = false
-            var i = 0
-            while i + 4 < u.count {
-                if u[i] == LF, u[i+1] == DASH, u[i+2] == DASH, u[i+3] == DASH, u[i+4] == LF {
-                    found = true; break
-                }
-                i += 1
-            }
-            self.misplaced = found
+            self.misplaced = Self.hasDisplacedBlock(u)
             return
         }
 
@@ -105,6 +97,87 @@ struct Frontmatter {
     }
 
     var exists: Bool { body != nil }
+
+    // MARK: - the silent case
+
+    /// Frontmatter that Claude Code will not read because something precedes
+    /// the opening `---`: a blank line, a stray space, a BOM. The whole file,
+    /// markers included, is then content, and every field below is ignored.
+    ///
+    /// The rule is deliberately narrow: ONLY whitespace or a BOM may precede
+    /// the opener, the block must close, and it must contain at least one
+    /// `key:` line. An earlier version asked only whether `\n---\n` appeared
+    /// anywhere in the first 2 KB, which is true of a setext heading and of
+    /// every markdown horizontal rule — it fired on 237 of this machine's
+    /// 1,551 markdown files, essentially none of them defective. That flag was
+    /// read by nothing, so it cost nothing; the moment it reaches the readout
+    /// it has to be right, and a rule that is wrong 237 times teaches the
+    /// reader to stop reading the readout.
+    private static func hasDisplacedBlock(_ u: [UInt8]) -> Bool {
+        let DASH: UInt8 = 0x2D, LF: UInt8 = 0x0A, CR: UInt8 = 0x0D
+        let SPACE: UInt8 = 0x20, TAB: UInt8 = 0x09
+
+        var i = 0
+        // A UTF-8 BOM. Invisible in every editor on the machine, and on its own
+        // enough to make the frontmatter unreadable.
+        if u.count >= 3, u[0] == 0xEF, u[1] == 0xBB, u[2] == 0xBF { i = 3 }
+        var displaced = i > 0
+        while i < u.count, u[i] == SPACE || u[i] == TAB || u[i] == LF || u[i] == CR {
+            i += 1
+            displaced = true
+        }
+        // Nothing was in the way: this is either real frontmatter, handled by
+        // the caller, or a file with none.
+        guard displaced else { return false }
+
+        // The opener, alone on its line.
+        guard i + 2 < u.count, u[i] == DASH, u[i + 1] == DASH, u[i + 2] == DASH else { return false }
+        var j = i + 3
+        while j < u.count, u[j] == SPACE || u[j] == TAB || u[j] == CR { j += 1 }
+        guard j < u.count, u[j] == LF else { return false }
+
+        // A closing marker, and at least one key before it. Without the key
+        // requirement a pair of horizontal rules under a blank first line
+        // reads as frontmatter, which it never is.
+        var lineStart = j + 1
+        var sawKey = false
+        while lineStart <= u.count {
+            var end = lineStart
+            while end < u.count, u[end] != LF { end += 1 }
+            if isCloser(u, lineStart, end) { return sawKey }
+            if !sawKey, hasKey(u, lineStart, end) { sawKey = true }
+            if end >= u.count { return false }
+            lineStart = end + 1
+        }
+        return false
+    }
+
+    /// `---`, and nothing else on the line.
+    private static func isCloser(_ u: [UInt8], _ s: Int, _ e: Int) -> Bool {
+        guard e - s >= 3, u[s] == 0x2D, u[s + 1] == 0x2D, u[s + 2] == 0x2D else { return false }
+        var i = s + 3
+        while i < e {
+            guard u[i] == 0x20 || u[i] == 0x09 || u[i] == 0x0D else { return false }
+            i += 1
+        }
+        return true
+    }
+
+    /// A plausible top-level scalar key: `name:`, `description:`, `allowed-tools:`.
+    private static func hasKey(_ u: [UInt8], _ s: Int, _ e: Int) -> Bool {
+        var i = s
+        while i < e {
+            let c = u[i]
+            let letter = (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)
+            let digit = c >= 0x30 && c <= 0x39
+            let joiner = c == 0x5F || c == 0x2D || c == 0x2E     // _ - .
+            if i == s { guard letter || c == 0x5F else { return false } }
+            else if c == 0x3A { return true }                    // :
+            else if !(letter || digit || joiner) { return false }
+            i += 1
+        }
+        return false
+    }
 
     /// The scalar value of a top-level key, unquoted and trimmed.
     /// Returns nil for an absent key, and "" for a key with an empty value.
