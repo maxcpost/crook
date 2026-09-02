@@ -2,9 +2,10 @@ import Foundation
 
 /// Finds absolute paths in a document that no longer exist.
 ///
-/// 17 of this machine's 34 slash commands name a path under
-/// `/Users/olduser/` — a home directory that does not exist here — and
-/// nothing on the machine reports it. The file looks fine; it just does nothing.
+/// This is a real and silent failure mode. On the machine this was written
+/// on, half the slash commands named paths under a home directory that had
+/// since been renamed. Nothing reported it. Each file looked completely fine
+/// and did nothing.
 ///
 /// Seven stages. Each stage's only two outcomes are NARROW THE CANDIDATE and
 /// DISCARD IT ENTIRELY. No stage widens a candidate, which is the structural
@@ -271,7 +272,7 @@ enum PathScanner {
     }
 
     /// Where the path stops being real. This is the teaching half: "broken" is
-    /// a dead end, "broken below /Users/olduser" says a home directory
+    /// a dead end, while "broken below /Users/<olduser>" says a home directory
     /// was renamed and absolute paths do not follow.
     private static func deepestExisting(_ path: String) -> String? {
         var url = URL(fileURLWithPath: path).deletingLastPathComponent()
