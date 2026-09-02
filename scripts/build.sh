@@ -17,6 +17,17 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
 cp web/dist/editor.js web/src/editor.html web/src/theme.css "$APP/Contents/Resources/web/"
 cp Assets/Crook.icns "$APP/Contents/Resources/Crook.icns"
 
+# The remote agent is a SEPARATE program. It runs on the other machine, so it is
+# compiled for both architectures — the Mac it is pushed to may not be the Mac
+# that built it — and shipped as a resource rather than linked into the app.
+echo "==> agent (universal)"
+AGENT_SRC="Crook/Remote/Agent/crook-agent.swift"
+AGENT_TMP=$(mktemp -d)
+xcrun swiftc -O -target arm64-apple-macos13.0  -o "$AGENT_TMP/a64" "$AGENT_SRC"
+xcrun swiftc -O -target x86_64-apple-macos13.0 -o "$AGENT_TMP/x64" "$AGENT_SRC"
+lipo -create -output "$APP/Contents/Resources/crook-agent" "$AGENT_TMP/a64" "$AGENT_TMP/x64"
+rm -rf "$AGENT_TMP"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,7 +71,7 @@ echo "==> swiftc"
 xcrun swiftc -target arm64-apple-macos26.0 \
   -module-name Crook \
   -O -whole-module-optimization \
-  $(find Crook -name '*.swift' | sort | tr '\n' ' ') \
+  $(find Crook -name '*.swift' -not -path 'Crook/Remote/Agent/*' | sort | tr '\n' ' ') \
   -o "$APP/Contents/MacOS/Crook"
 
 # Strip extended attributes before signing. The copy steps above leave

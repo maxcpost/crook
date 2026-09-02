@@ -22,6 +22,12 @@ enum T {
         }
     }
 
+    /// Announce what was NOT run. A suite that silently does nothing reads
+    /// exactly like a suite that passed.
+    static func skip(_ id: String, _ why: String) {
+        print("  skip \(id)  \(why)")
+    }
+
     static func eq<V: Equatable>(_ id: String, _ got: V, _ want: V) {
         ok(id, got == want, "got \(got), want \(want)")
     }

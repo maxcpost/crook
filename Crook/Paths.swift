@@ -14,4 +14,13 @@ enum Paths {
     static var home: String { homeOverride ?? NSHomeDirectory() }
     static var claude: String { home + "/.claude" }
     static var claudeURL: URL { URL(fileURLWithPath: claude) }
+
+    /// Crook's own container. Never inside the user's tree — Crook does not
+    /// write to the corpus it is watching.
+    static var support: URL {
+        let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Crook", isDirectory: true)
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        return u
+    }
 }

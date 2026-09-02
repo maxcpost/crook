@@ -11,6 +11,7 @@ if want("bytes")    { ByteTests.run() }
 if want("diff")     { DiffTests.run(); DiffTests.unified() }
 if want("validate") { ValidationTests.run() }
 
+if want("agent")    { AgentTests.run() }
 if want("regress")  { RegressionTests.run() }
 
 exit(T.summary())
