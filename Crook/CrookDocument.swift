@@ -17,6 +17,54 @@ final class CrookDocument: NSDocument {
 
     override class var autosavesInPlace: Bool { true }
 
+    /// Set when this document's bytes live on another machine.
+    ///
+    /// A remote document keeps everything that makes CrookDocument correct — the
+    /// byte profile, the ownership guard, the dirty tracking — and bypasses only
+    /// NSDocument's file plumbing, which is built on a local URL and means
+    /// nothing across a network. Autosave-in-place is disabled for these,
+    /// because writing to another machine on a timer is not something to do
+    /// without being asked.
+    private(set) var remoteProviderID: String?
+
+    /// Load bytes that arrived from a provider rather than from a URL.
+    /// NSDocumentController cannot open these: it checks the file exists on
+    /// THIS machine first, and for a remote path it never does.
+    func adoptRemote(data: Data, url: URL, providerID: String) throws {
+        try read(from: data, ofType: "net.daringfireball.markdown")
+        fileURL = url
+        remoteProviderID = providerID
+    }
+
+    /// ⌘S. For a local document this is AppKit's job; for a remote one the
+    /// write has to go through the provider, and must not clear the dirty flag
+    /// until the far side has confirmed it.
+    @IBAction override func save(_ sender: Any?) {
+        guard let providerID = remoteProviderID, let url = fileURL else {
+            super.save(sender); return
+        }
+        let p = Providers.current
+        guard p.id == providerID, p.isConnected else {
+            // Never silently. The buffer is authoritative and stays exactly as
+            // it is; the user decides what to do about the connection.
+            let a = NSAlert()
+            a.messageText = "Not connected to that machine."
+            a.informativeText = "Your edits are still here and unchanged. Reconnect, and save again."
+            a.addButton(withTitle: "OK")
+            if let w = windowControllers.first?.window { a.beginSheetModal(for: w) { _ in } }
+            else { a.runModal() }
+            return
+        }
+        do {
+            let bytes = try data(ofType: "net.daringfireball.markdown")
+            try p.write(bytes, to: url.path)
+            updateChangeCount(.changeCleared)
+            SeenStore.shared.markSeen(url)
+        } catch {
+            presentError(error)
+        }
+    }
+
     // CodeMirror owns text undo. Transaction.addToHistory.of(false) also calls
     // state.addMapping(), which keeps older undo entries positioned across an
     // external rewrite; reimplementing that in NSUndoManager would mean porting

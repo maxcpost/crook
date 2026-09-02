@@ -70,11 +70,20 @@ final class SSHTransport {
         ]
     }
 
+    /// Caches, not Application Support, and the reason is not tidiness.
+    ///
+    /// ssh parses -o values with a whitespace-splitting config parser, so a
+    /// path containing "Application Support" fails with "keyword controlpath
+    /// extra arguments at end of line" — the connection then dies for a reason
+    /// that has nothing to do with the network. Caches has no space in it.
+    ///
+    /// The socket also has to fit sockaddr_un's 104 bytes. %C is a hash of the
+    /// connection parameters, which keeps this bounded no matter how long the
+    /// hostname is; a readable path would not.
     private static let controlPath: String = {
-        let dir = Paths.support.appendingPathComponent("cm", isDirectory: true)
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Crook", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // %C is a hash of connection parameters: short enough to stay under the
-        // 104-byte sockaddr_un limit, which a readable path would blow past.
         return dir.appendingPathComponent("%C").path
     }()
 

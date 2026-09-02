@@ -193,3 +193,42 @@ enum AgentTests {
              pipe.waitForEvent("changed", timeout: 6) != nil)
     }
 }
+
+// MARK: - transport
+
+extension AgentTests {
+
+    /// The failure paths, which are most of what a network state machine is.
+    ///
+    /// None of these need a reachable machine — that is the point. A connection
+    /// attempt that hangs, or that reports "something went wrong", is worse than
+    /// one that fails, and those are the two outcomes worth pinning down before
+    /// there is a Mac mini to try it against.
+    static func transport() {
+        T.suite("transport — failing usefully")
+
+        let t = SSHTransport(host: "crook-no-such-host.invalid")
+        let began = Date()
+        var caught: Error?
+        do { try t.connect(passphrase: nil) } catch { caught = error }
+        let took = Date().timeIntervalSince(began)
+
+        T.ok("X-01  an unresolvable host fails rather than hanging", caught != nil)
+        T.ok("X-02  and fails promptly", took < 30, String(format: "%.1fs", took))
+
+        let message = caught?.localizedDescription ?? ""
+        T.ok("X-03  the message names the machine, not the plumbing",
+             message.contains("crook-no-such-host") || message.lowercased().contains("resolve"),
+             message)
+        T.ok("X-04  and is not an opaque code", !message.isEmpty && !message.contains("Error Domain"),
+             message)
+
+        // Sending on a transport that never connected must fail cleanly, not
+        // crash and not block: every provider call goes through this path when
+        // the link is down.
+        var sendFailed = false
+        do { _ = try t.send(["op": "ping"], timeout: 2) } catch { sendFailed = true }
+        T.ok("X-05  requests on a dead transport fail immediately", sendFailed)
+        T.ok("X-06  and it does not claim to be running", !t.isRunning)
+    }
+}

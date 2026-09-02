@@ -193,11 +193,13 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     }
 
     /// Show or hide the empty state. Called whenever the open document changes.
-    func showEmptyState(_ show: Bool, onAddProject: (() -> Void)? = nil) {
+    func showEmptyState(_ show: Bool, onAddProject: (() -> Void)? = nil,
+                        onConnect: (() -> Void)? = nil) {
         empty.isHidden = !show
         reachChip.isHidden = show
         if show {
             if let onAddProject { empty.onAddProject = onAddProject }
+            if let onConnect { empty.onConnect = onConnect }
             empty.refresh(hasSystemFiles: !Workspace.shared.system.isEmpty,
                           hasProjects: !Workspace.shared.projects.isEmpty)
         }

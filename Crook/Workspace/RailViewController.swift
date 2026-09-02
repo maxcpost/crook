@@ -10,6 +10,11 @@ final class RailViewController: NSViewController {
     private var outline: NSOutlineView!
     private var scroll: NSScrollView!
     private var appearanceButton: NSButton!
+    /// Which machine this window is looking at. Sits beside the appearance
+    /// toggle rather than at the top: it is a property of the window, not a
+    /// heading for the tree, and putting it above SYSTEM implied the tree was
+    /// nested inside it.
+    private var machineButton: NSPopUpButton!
     private let ws = Workspace.shared
 
     /// Section headers are Nodes too, so the outline has one uniform item type.
@@ -22,6 +27,44 @@ final class RailViewController: NSViewController {
     }
 
     var onOpen: ((URL) -> Void)?
+    var onConnect: (() -> Void)?
+    var onUseLocal: (() -> Void)?
+    var onSwitchTo: ((String) -> Void)?
+
+    /// Rebuild the machine menu. A pull-down's first item is its label, so the
+    /// title carries the current machine and the rest are somewhere to go.
+    func setMachine(name: String?, connected: Bool) {
+        guard machineButton != nil else { return }
+        let menu = NSMenu()
+        let title = name.map { connected ? $0 : "\($0) — offline" } ?? "This Mac"
+        menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+
+        if name != nil {
+            let local = NSMenuItem(title: "This Mac", action: #selector(useLocal), keyEquivalent: "")
+            local.target = self
+            menu.addItem(local)
+        }
+        for host in Machines.shared.known where host != name {
+            let item = NSMenuItem(title: host, action: #selector(switchMachine(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = host
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let connect = NSMenuItem(title: "Connect to a Machine…", action: #selector(connectTapped), keyEquivalent: "")
+        connect.target = self
+        menu.addItem(connect)
+
+        machineButton.menu = menu
+        machineButton.contentTintColor = connected || name == nil ? .tertiaryLabelColor : .systemOrange
+    }
+
+    @objc private func useLocal() { onUseLocal?() }
+    @objc private func connectTapped() { onConnect?() }
+    @objc private func switchMachine(_ sender: NSMenuItem) {
+        guard let host = sender.representedObject as? String else { return }
+        onSwitchTo?(host)
+    }
 
     override func loadView() {
         // The rail supplies its own material and fills its pane edge to edge.
@@ -100,7 +143,18 @@ final class RailViewController: NSViewController {
         appearanceButton.contentTintColor = .tertiaryLabelColor
         container.addSubview(appearanceButton)
 
+        machineButton = NSPopUpButton(frame: .zero, pullsDown: true)
+        machineButton.isBordered = false
+        machineButton.font = .systemFont(ofSize: 11)
+        machineButton.translatesAutoresizingMaskIntoConstraints = false
+        machineButton.controlSize = .small
+        container.addSubview(machineButton)
+
         NSLayoutConstraint.activate([
+            machineButton.leadingAnchor.constraint(equalTo: appearanceButton.trailingAnchor, constant: 4),
+            machineButton.centerYAnchor.constraint(equalTo: appearanceButton.centerYAnchor),
+            machineButton.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -8),
+
             scroll.topAnchor.constraint(equalTo: container.topAnchor),
             scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),

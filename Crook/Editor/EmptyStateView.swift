@@ -15,9 +15,11 @@ final class EmptyStateView: NSView {
     private let title = NSTextField(labelWithString: "Crook")
     private let blurb = NSTextField(wrappingLabelWithString: "")
     private let action = NSButton()
+    private let connect = NSButton()
     private let hint = NSTextField(wrappingLabelWithString: "")
 
     var onAddProject: (() -> Void)?
+    var onConnect: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -40,6 +42,19 @@ final class EmptyStateView: NSView {
         action.target = self
         action.action = #selector(add)
 
+        // The second way in, offered rather than demanded.
+        //
+        // The two options belong here, at the one moment the question means
+        // anything, and not in a modal gate at every launch. Someone who
+        // downloads Crook to fix a local CLAUDE.md should never have to answer a
+        // question about a machine they do not own; they simply never read this
+        // button. Someone who does own one finds it exactly where they looked.
+        connect.title = "Connect to a Machine…"
+        connect.bezelStyle = .rounded
+        connect.controlSize = .large
+        connect.target = self
+        connect.action = #selector(connectTapped)
+
         hint.stringValue = "Your personal files in ~/.claude appear automatically."
         hint.font = .systemFont(ofSize: 11.5)
         hint.textColor = .tertiaryLabelColor
@@ -47,7 +62,11 @@ final class EmptyStateView: NSView {
         // A single-line label clipped the longest hint at "get st".
         hint.preferredMaxLayoutWidth = 380
 
-        let stack = NSStackView(views: [title, blurb, action, hint])
+        let buttons = NSStackView(views: [action, connect])
+        buttons.orientation = .horizontal
+        buttons.spacing = 10
+
+        let stack = NSStackView(views: [title, blurb, buttons, hint])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 14
@@ -87,4 +106,5 @@ final class EmptyStateView: NSView {
     }
 
     @objc private func add() { onAddProject?() }
+    @objc private func connectTapped() { onConnect?() }
 }

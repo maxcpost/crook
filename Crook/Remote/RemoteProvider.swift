@@ -38,6 +38,9 @@ final class RemoteProvider: FileProvider {
     /// where it would have captured an empty string.
     func homePathDidResolve(_ home: String) { homePath = home }
     var onTreeChanged: (() -> Void)?
+    /// The paths the far machine says moved. The window uses this for the open
+    /// document; the tree refresh handles everything else.
+    var onPathsChanged: (([String]) -> Void)?
     var onDisconnected: ((String) -> Void)?
 
     init(transport: SSHTransport, displayName: String) {
@@ -55,9 +58,13 @@ final class RemoteProvider: FileProvider {
     private func handle(_ ev: [String: Any]) {
         switch ev["ev"] as? String {
         case "changed":
+            let paths = ev["paths"] as? [String] ?? []
             // Coalesced by the agent already; a rebuild is cheap because the
             // snapshot refresh is one round trip.
             refresh { }
+            if !paths.isEmpty {
+                DispatchQueue.main.async { [weak self] in self?.onPathsChanged?(paths) }
+            }
         default:
             break
         }

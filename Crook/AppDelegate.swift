@@ -65,6 +65,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showWorkspace()
         }
 
+        // Reconnect to the machine this window was last looking at, in the
+        // background. Never blocking: a mini that is asleep or off the tailnet
+        // must not hold the app on a blank screen, so Crook opens local and
+        // offers to reconnect rather than waiting to find out.
+        if let host = Machines.shared.last {
+            Machines.shared.connect(host: host) { result in
+                guard case .success(let p) = result else { return }
+                WorkspaceWindowController.shared.adopt(p)
+            }
+        }
+
         NSApp.activate(ignoringOtherApps: true)
     }
 

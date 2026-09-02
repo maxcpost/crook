@@ -74,7 +74,12 @@ final class WorkspaceWindowController: NSWindowController {
         window.center()
 
         rail.onOpen = { [weak self] url in self?.retarget(to: url) }
-        editor.showEmptyState(true) { [weak self] in self?.rail.beginAddProject() }
+        rail.onConnect = { [weak self] in self?.beginConnect() }
+        rail.onUseLocal = { [weak self] in self?.switchToLocal() }
+        rail.onSwitchTo = { [weak self] host in self?.reconnect(to: host) }
+        syncMachine()
+        editor.showEmptyState(true, onAddProject: { [weak self] in self?.rail.beginAddProject() },
+                              onConnect: { [weak self] in self?.beginConnect() })
 
         // Re-read the tree when Crook comes forward.
         //
@@ -134,12 +139,155 @@ final class WorkspaceWindowController: NSWindowController {
         rail.reload()
     }
 
+    // MARK: - machines
+
+    func beginConnect() {
+        let sheet = ConnectSheet()
+        sheet.onConnected = { [weak self] provider in self?.adopt(provider) }
+        contentViewController?.presentAsSheet(sheet)
+    }
+
+    /// Point the whole window at another machine.
+    ///
+    /// One machine per window, so this is a clean swap rather than a merge: the
+    /// open document belonged to the previous machine and is closed, because a
+    /// buffer whose file lives somewhere no longer reachable is a trap. Its
+    /// bytes are still on that machine, untouched.
+    func adopt(_ provider: RemoteProvider) {
+        closeCurrentDocument()
+        provider.onTreeChanged = { [weak self] in self?.rail.reload() }
+        provider.onPathsChanged = { [weak self] paths in
+            // The agent reports directories as well as files, so match on
+            // prefix: a write to the open file arrives as its containing
+            // directory when the event is coalesced.
+            guard let self, let open = (self.document as? CrookDocument)?.fileURL else { return }
+            guard paths.contains(where: { open.path == $0 || open.path.hasPrefix($0 + "/") }) else { return }
+            self.handleExternalChange(.written)
+        }
+        provider.onDisconnected = { [weak self] message in
+            DispatchQueue.main.async { self?.handleDisconnect(message) }
+        }
+        Providers.use(provider)
+        rail.reload()
+        syncMachine()
+        provider.refresh { [weak self] in
+            self?.rail.reload()
+            self?.syncMachine()
+        }
+        provider.startWatching()
+    }
+
+    /// Jump straight to a machine already in the list, without the sheet.
+    func reconnect(to host: String) {
+        Machines.shared.connect(host: host) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let p): self.adopt(p)
+            // A saved machine that will not answer silently is worse than one
+            // that asks: fall back to the sheet with the name filled in, where
+            // the error can actually be read.
+            case .failure: self.beginConnect()
+            }
+        }
+    }
+
+    func switchToLocal() {
+        closeCurrentDocument()
+        Machines.shared.disconnect()
+        rail.reload()
+        syncMachine()
+    }
+
+    private func closeCurrentDocument() {
+        guard let doc = document as? CrookDocument else { return }
+        doc.detachFromEditor()
+        doc.removeWindowController(self)
+        if !doc.isDocumentEdited { doc.close() }
+        editor.showEmptyState(true, onAddProject: { [weak self] in self?.rail.beginAddProject() },
+                              onConnect: { [weak self] in self?.beginConnect() })
+        syncTitle(nil)
+    }
+
+    /// The machine name lives in the window subtitle: present without being
+    /// chrome, and absent entirely when you are looking at your own Mac, which
+    /// is the case that should feel like no feature at all.
+    func syncMachine() {
+        let p = Providers.current
+        window?.subtitle = p.isLocal ? "" : p.displayName
+        rail.setMachine(name: p.isLocal ? nil : p.displayName, connected: p.isConnected)
+    }
+
+    private func handleDisconnect(_ message: String) {
+        syncMachine()
+        let doc = document as? CrookDocument
+        let alert = NSAlert()
+        alert.messageText = message
+        if doc?.isDocumentEdited == true {
+            // The buffer is authoritative and is never discarded to resolve a
+            // connection problem.
+            alert.informativeText = "Your unsaved edits are still here. They have not reached "
+                + "that machine yet — reconnect and save, or copy them somewhere safe."
+            alert.addButton(withTitle: "Reconnect")
+            alert.addButton(withTitle: "Keep Editing")
+        } else {
+            alert.informativeText = "Nothing was lost."
+            alert.addButton(withTitle: "Reconnect")
+            alert.addButton(withTitle: "Work Locally")
+        }
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            if response == .alertFirstButtonReturn {
+                if let host = Machines.shared.last {
+                    Machines.shared.connect(host: host) { result in
+                        if case .success(let p) = result { self.adopt(p) }
+                        else { self.beginConnect() }
+                    }
+                } else {
+                    self.beginConnect()
+                }
+            } else if doc?.isDocumentEdited != true {
+                self.switchToLocal()
+            }
+        }
+    }
+
     func retarget(to url: URL) {
         guard !isRetargeting else { return }
         let current = (document as? CrookDocument)?.fileURL
         guard current != url else { editor.focusEditor(); return }
 
         isRetargeting = true
+
+        // A remote file cannot go through NSDocumentController: it checks the
+        // file exists on THIS machine before it will build a document, and for a
+        // path on the mini it never does. The document is constructed directly
+        // from bytes the provider fetched instead — everything after that point
+        // is identical, because CrookDocument already reads and writes bytes
+        // rather than URLs.
+        let provider = Providers.current
+        if !provider.isLocal {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let data = provider.contents(url.path)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    defer { self.isRetargeting = false }
+                    guard let data else {
+                        NSLog("Crook: could not read \(url.path) from \(provider.displayName)")
+                        return
+                    }
+                    let next = CrookDocument()
+                    do { try next.adoptRemote(data: data, url: url, providerID: provider.id) }
+                    catch {
+                        NSLog("Crook: could not decode \(url.lastPathComponent): \(error)")
+                        return
+                    }
+                    self.install(next, at: url)
+                }
+            }
+            return
+        }
+
         NSDocumentController.shared.openDocument(withContentsOf: url, display: false) { [weak self] doc, _, err in
             guard let self else { return }
             defer { self.isRetargeting = false }
@@ -149,25 +297,29 @@ final class WorkspaceWindowController: NSWindowController {
             }
             guard let next = doc as? CrookDocument else { return }
             guard next !== self.document as? CrookDocument else { return }
-
-            if let previous = self.document as? CrookDocument {
-                previous.detachFromEditor()
-                previous.removeWindowController(self)
-                // Let a clean, now-windowless document go. A dirty one stays
-                // alive so its unsaved edits are still recoverable.
-                if previous.windowControllers.isEmpty && !previous.isDocumentEdited {
-                    previous.close()
-                }
-            }
-            next.addWindowController(self)
-            next.attach(to: self.editor)
-            self.syncTitle(url)
-            // Reload so the delta on the file just opened clears; expansion and
-            // selection are preserved across it.
-            self.rail.reload()
-            self.rail.selectFile(url)
-            self.editor.focusEditor()
+            self.install(next, at: url)
         }
+    }
+
+    /// Swap the window onto a document, wherever its bytes came from.
+    private func install(_ next: CrookDocument, at url: URL) {
+        if let previous = document as? CrookDocument, previous !== next {
+            previous.detachFromEditor()
+            previous.removeWindowController(self)
+            // Let a clean, now-windowless document go. A dirty one stays alive
+            // so its unsaved edits are still recoverable.
+            if previous.windowControllers.isEmpty && !previous.isDocumentEdited {
+                previous.close()
+            }
+        }
+        next.addWindowController(self)
+        next.attach(to: editor)
+        syncTitle(url)
+        // Reload so the delta on the file just opened clears; expansion and
+        // selection are preserved across it.
+        rail.reload()
+        rail.selectFile(url)
+        editor.focusEditor()
     }
 
     /// "Atlas ▸ CLAUDE.md", not "CLAUDE.md".
@@ -176,9 +328,13 @@ final class WorkspaceWindowController: NSWindowController {
     /// filename alone identifies almost nothing in this corpus. The proxy icon
     /// still carries the full path for anyone who wants it.
     func syncTitle(_ url: URL?) {
-        editor.showEmptyState(url == nil) { [weak self] in self?.rail.beginAddProject() }
+        editor.showEmptyState(url == nil, onAddProject: { [weak self] in self?.rail.beginAddProject() },
+                              onConnect: { [weak self] in self?.beginConnect() })
         window?.representedURL = url
-        watcher.watch(url)
+        // kqueue only means anything for a file on this machine. A remote
+        // document is watched by the agent instead, which is the only side that
+        // can see the writes.
+        watcher.watch(Providers.current.isLocal ? url : nil)
         syncState = .inSync
         synchronizeWindowTitleWithDocumentName()
         reachContext = url.map { ReachClassifier.Context.resolve($0) }
@@ -251,7 +407,7 @@ final class WorkspaceWindowController: NSWindowController {
         // Clean buffer: reload and keep the reader's place, then say WHICH
         // lines moved. "Something changed" is not reviewable; "these four lines
         // changed" is, and reviewing agent writes is the actual job here.
-        guard let data = FileManager.default.contents(atPath: url.path),
+        guard let data = Providers.current.contents(url.path),
               data != doc.currentBytes() else { return }
         let before = doc.currentText()
         doc.reloadFromDisk()
