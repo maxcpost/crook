@@ -363,6 +363,34 @@ final class Workspace {
             .map { URL(fileURLWithPath: $0) }
     }
 
+    /// The projects imported for a named machine, without needing that machine
+    /// to be the current one.
+    ///
+    /// `defaultsKey` reads Providers.current, which is still the local provider
+    /// while a connection is being established — the exact moment the roots
+    /// have to be computed.
+    static func importedPaths(forProviderID id: String) -> [String] {
+        UserDefaults.standard.array(forKey: "CrookImportedProjects::\(id)") as? [String] ?? []
+    }
+
+    /// Everything the agent on `providerID` is allowed to serve.
+    ///
+    /// There is one correct answer — the personal tree plus every project this
+    /// machine has imported — and it was being assembled twice, from two
+    /// momentary lists. On connect it was `~/.claude` alone, dropping every
+    /// project imported in an earlier session; on add it was `~/.claude` plus
+    /// only the projects picked in that sheet, dropping the ones picked before.
+    ///
+    /// Either way the sidebar kept drawing the files, because `exists` falls
+    /// back to a `stat` the agent does not gate, while `read` is gated. The
+    /// result was a file you could see and could not open, and no error told
+    /// you why.
+    static func remoteRoots(home: String, providerID: String) -> [String] {
+        var seen = Set<String>()
+        return ([home + "/.claude"] + importedPaths(forProviderID: providerID))
+            .filter { seen.insert($0).inserted }
+    }
+
     func addProject(_ url: URL) {
         var paths = importedURLs().map(\.path)
         guard !paths.contains(url.path) else { return }

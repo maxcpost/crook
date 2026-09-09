@@ -297,7 +297,12 @@ final class RailViewController: NSViewController {
                 if let remote = Providers.current as? RemoteProvider {
                     // The new roots have to reach the agent before its tree can
                     // include them, and before its watch can see them change.
-                    remote.declareRoots([remote.homePath + "/.claude"] + urls.map(\.path))
+                    //
+                    // From what is now persisted, not from this sheet's picks:
+                    // addProject has already saved them, and declaring only
+                    // `urls` un-declared every project added before this one.
+                    remote.declareRoots(
+                        Workspace.remoteRoots(home: remote.homePath, providerID: remote.id))
                     remote.refresh { self.rail_reloadAfterAdd() }
                     remote.startWatching()
                 } else {

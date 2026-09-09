@@ -76,10 +76,14 @@ final class Machines {
             }
             let p = RemoteProvider(transport: t, displayName: host)
             p.homePathDidResolve(t.remoteHome)
-            // Only ever the two places Claude Code reads from, plus whatever
-            // projects the user later adds.
-            p.declareRoots([t.remoteHome + "/.claude"])
-            p.roots = [t.remoteHome + "/.claude"]
+            // The personal tree AND every project already imported for this
+            // machine. Declaring only ~/.claude here is what made a project
+            // added in an earlier session unopenable after a reconnect: the
+            // agent refuses to read outside its roots, so the file was drawn in
+            // the sidebar and did nothing when clicked.
+            let roots = Workspace.remoteRoots(home: t.remoteHome, providerID: p.id)
+            p.declareRoots(roots)
+            p.roots = roots
             DispatchQueue.main.async {
                 self.remote = p
                 self.remember(host)

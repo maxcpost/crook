@@ -273,7 +273,15 @@ final class WorkspaceWindowController: NSWindowController {
                     guard let self else { return }
                     defer { self.isRetargeting = false }
                     guard let data else {
+                        // Silence here is what made the roots bug undiagnosable:
+                        // the file was drawn in the sidebar, the click did
+                        // nothing, and the only trace was a line in Console
+                        // nobody has open. A read can still fail for reasons
+                        // that are nobody's bug — the file was deleted on the
+                        // far side a moment ago, or its permissions changed —
+                        // and each of those deserves saying so.
                         NSLog("Crook: could not read \(url.path) from \(provider.displayName)")
+                        self.reportUnreadable(url, machine: provider.displayName)
                         return
                     }
                     let next: CrookDocument
@@ -304,6 +312,16 @@ final class WorkspaceWindowController: NSWindowController {
     }
 
     /// Swap the window onto a document, wherever its bytes came from.
+    /// Say that a file would not open, and name the machine it is on.
+    private func reportUnreadable(_ url: URL, machine: String) {
+        let a = NSAlert()
+        a.messageText = "Couldn't open \(url.lastPathComponent)."
+        a.informativeText = "\(machine) did not return the file. It may have been moved or "
+            + "deleted since the tree was last refreshed."
+        a.addButton(withTitle: "OK")
+        if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
+    }
+
     private func install(_ next: CrookDocument, at url: URL) {
         if let previous = document as? CrookDocument, previous !== next {
             previous.detachFromEditor()
