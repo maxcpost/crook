@@ -189,16 +189,29 @@ final class SSHTransport {
                 throw Failure.unreachable(
                     "Can't find \(host). Check the name, or that Tailscale is connected on both Macs.")
             }
-            // The first-run failure, by a wide margin. ssh reached the network
-            // and found nothing listening on 22, which on a Mac means Remote
-            // Login is off — not that the machine is unreachable. Saying
-            // "connection refused" sends people to look at the network, which
-            // is the one thing that is working.
-            if e.contains("connection refused") || e.contains("operation timed out")
-                || e.contains("no route") || e.contains("connection timed out") {
+            // Refused and timed out are different machines' problems, and
+            // conflating them sends people to the wrong Mac.
+            //
+            // Refused is an RST: something answered, so the host is reachable
+            // and nothing is listening on 22. On a Mac that is Remote Login,
+            // off. Say so plainly — it is the first-run failure by a wide
+            // margin.
+            if e.contains("connection refused") {
                 throw Failure.unreachable(
-                    "\(host) is not accepting SSH. On that Mac, turn on System Settings ▸ "
+                    "\(host) refused the connection. On that Mac, turn on System Settings ▸ "
                     + "General ▸ Sharing ▸ Remote Login.")
+            }
+            // Timed out is silence, and silence has more than one author. It
+            // is Remote Login off behind a firewall that drops rather than
+            // refuses — but it is equally a VPN on THIS Mac holding a route to
+            // the far address, which is not a thing you fix by walking over to
+            // the other machine. Name both; claiming to know which would be
+            // guessing.
+            if e.contains("operation timed out") || e.contains("connection timed out")
+                || e.contains("no route") {
+                throw Failure.unreachable(
+                    "\(host) did not answer. Check Remote Login is on over there — and that a "
+                    + "VPN on this Mac is not capturing the route to it.")
             }
             if probe.status == 124 { throw Failure.timedOut("Connecting to \(host)") }
             throw Failure.unreachable(Self.explain(probe.err, host: host))
