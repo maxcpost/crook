@@ -267,6 +267,17 @@ final class WorkspaceWindowController: NSWindowController {
         // rather than URLs.
         let provider = Providers.current
         if !provider.isLocal {
+            // A dirty document navigated away from is still registered, with
+            // the user's edits in it. The local branch gets this for free —
+            // openDocument(withContentsOf:) returns the open document — and
+            // without it here, coming back to a file fetched the far machine's
+            // bytes, registered a second document under the same name, and
+            // showed the edits' absence as if they had never happened.
+            if let held = CrookDocument.registeredRemote(url: url, providerID: provider.id) {
+                isRetargeting = false
+                install(held, at: url)
+                return
+            }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let data = provider.contents(url.path)
                 DispatchQueue.main.async {
@@ -311,7 +322,6 @@ final class WorkspaceWindowController: NSWindowController {
         }
     }
 
-    /// Swap the window onto a document, wherever its bytes came from.
     /// Say that a file would not open, and name the machine it is on.
     private func reportUnreadable(_ url: URL, machine: String) {
         let a = NSAlert()
@@ -322,6 +332,7 @@ final class WorkspaceWindowController: NSWindowController {
         if let window { a.beginSheetModal(for: window) { _ in } } else { a.runModal() }
     }
 
+    /// Swap the window onto a document, wherever its bytes came from.
     private func install(_ next: CrookDocument, at url: URL) {
         if let previous = document as? CrookDocument, previous !== next {
             previous.detachFromEditor()

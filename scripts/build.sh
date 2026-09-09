@@ -133,17 +133,33 @@ for _ in 1 2 3; do
 done
 if [ -z "$signed" ]; then
   # Last resort, and the one release.sh relies on: a directory nothing has ever
-  # launched from cannot have been stamped. Build there and move the result in.
-  echo "   (bundle at $APP was stamped by Launch Services; rebuilding via staging)"
+  # launched from cannot have been stamped. Sign there and move the result in.
+  echo "   (bundle at $APP was stamped; signing a staged copy instead)"
   stage=$(mktemp -d)
+  trap 'rm -rf "$stage"' EXIT
   ditto "$APP" "$stage/Crook.app"
   xattr -cr "$stage/Crook.app" 2>/dev/null || true
-  codesign --force --sign - --timestamp=none "$stage/Crook.app" >/dev/null 2>&1
+  # If THIS fails, the stamp was never the problem, and the reason is the one
+  # thing worth printing. Under set -e a bare failing command would have
+  # exited with nothing said and the temp dir left behind.
+  if ! reason=$(codesign --force --sign - --timestamp=none "$stage/Crook.app" 2>&1); then
+    echo "!! signing failed, and not because of the stamp:"
+    echo "$reason" | sed 's/^/   /'
+    exit 1
+  fi
+  codesign --verify --strict "$stage/Crook.app" >/dev/null 2>&1 \
+    || { echo "!! signature invalid even on a clean copy — the app will not open on another Mac"; exit 1; }
   rm -rf "$APP"
   ditto "$stage/Crook.app" "$APP"
-  rm -rf "$stage"
-  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
 fi
-codesign --verify --strict "$APP" >/dev/null 2>&1 \
-  || { echo "!! signature invalid — the app will not open on another Mac"; exit 1; }
+# The final check is at the real path, which can be stamped again between any
+# two commands here — iCloud does it within seconds of a write under Desktop
+# or Documents. Strip and verify, a few times if that is what it takes; a
+# bundle that verifies once with the stamp removed is a good bundle.
+verified=""
+for _ in 1 2 3; do
+  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
+  if codesign --verify --strict "$APP" >/dev/null 2>&1; then verified=yes; break; fi
+done
+[ -n "$verified" ] || { echo "!! signature invalid — the app will not open on another Mac"; exit 1; }
 echo "==> built $APP"

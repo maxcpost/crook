@@ -33,9 +33,19 @@ UserDefaults.standard.register(defaults: [
     "WebContinuousSpellCheckingEnabled": false,
 ])
 
+// SIGPIPE's default disposition is to kill the process. Crook writes into pipes
+// to ssh constantly, and ssh can exit at any moment — a dropped link, a wrong
+// password, a machine going to sleep. The write must fail with EPIPE and be
+// handled, not take the app down. Process-wide, and before anything can write.
+signal(SIGPIPE, SIG_IGN)
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
-_ = NSDocumentController.shared
+// The first NSDocumentController created becomes the shared one. It has to be
+// ours, and it has to be before anything asks for .shared.
+let documents = CrookDocumentController()
+precondition(NSDocumentController.shared === documents,
+             "another NSDocumentController was created before CrookDocumentController")
 app.run()

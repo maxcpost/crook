@@ -28,6 +28,10 @@ final class ConnectSheet: NSViewController {
     private let passField = NSSecureTextField()
     private let passLabel = NSTextField(labelWithString: "")
     private var wanted: SSHTransport.Secret?
+    private var busy = false
+    /// Set by Cancel. A connection already in flight cannot be recalled, but
+    /// its result can be thrown away rather than adopted behind a closed sheet.
+    private var cancelled = false
 
     var onConnected: ((RemoteProvider) -> Void)?
 
@@ -45,8 +49,12 @@ final class ConnectSheet: NSViewController {
 
         field.placeholderString = "mac-mini"
         field.font = .systemFont(ofSize: 13)
-        field.target = self
-        field.action = #selector(connect)
+        // No action on the field. NSComboBox sends its action when an item is
+        // PICKED from the list, so wiring it to connect() meant choosing a
+        // machine started the connection before the pick could be corrected
+        // or a password typed. Return still connects: the Connect button is
+        // the window's default and takes the key from the field editor.
+        field.delegate = self
         field.completes = true
         field.numberOfVisibleItems = 8
 
@@ -68,8 +76,6 @@ final class ConnectSheet: NSViewController {
         passLabel.font = .systemFont(ofSize: 11.5)
         passLabel.textColor = .secondaryLabelColor
         passField.font = .systemFont(ofSize: 13)
-        passField.target = self
-        passField.action = #selector(connect)
         passLabel.isHidden = true
         passField.isHidden = true
 
@@ -123,12 +129,30 @@ final class ConnectSheet: NSViewController {
     }
 
     @objc private func cancel() {
+        cancelled = true
         presentingViewController?.dismiss(self)
     }
 
+    /// The host changed under a secret typed for a different one.
+    ///
+    /// Without this, host A's password was carried into the FIRST attempt at
+    /// host B: sent to B's sshd, and B's own "I need a password" turned into a
+    /// hard failure because an attempt made WITH a secret is never asked
+    /// again. A secret belongs to the machine it was typed for.
+    private func hostChanged() {
+        guard wanted != nil || !status.stringValue.isEmpty else { return }
+        wanted = nil
+        passField.stringValue = ""
+        passLabel.isHidden = true
+        passField.isHidden = true
+        status.stringValue = ""
+    }
+
     @objc private func connect() {
+        guard !busy else { return }
         let host = field.stringValue.trimmingCharacters(in: .whitespaces)
         guard !host.isEmpty else { return }
+        cancelled = false
         setBusy(true, "Connecting to \(host)…")
 
         let pass = wanted != nil && !passField.stringValue.isEmpty ? passField.stringValue : nil
@@ -137,6 +161,11 @@ final class ConnectSheet: NSViewController {
             switch result {
             case .success(let provider):
                 self.setBusy(false, "")
+                if self.cancelled {
+                    // The sheet is gone and nobody asked for this any more.
+                    Machines.shared.disconnect()
+                    return
+                }
                 self.presentingViewController?.dismiss(self)
                 self.onConnected?(provider)
 
@@ -164,6 +193,7 @@ final class ConnectSheet: NSViewController {
     }
 
     private func setBusy(_ busy: Bool, _ message: String) {
+        self.busy = busy
         connectButton.isEnabled = !busy
         field.isEnabled = !busy
         passField.isEnabled = !busy
@@ -172,4 +202,9 @@ final class ConnectSheet: NSViewController {
         status.textColor = busy ? .secondaryLabelColor : (message.isEmpty ? .secondaryLabelColor : .systemRed)
         if busy { status.textColor = .secondaryLabelColor }
     }
+}
+
+extension ConnectSheet: NSComboBoxDelegate {
+    func controlTextDidChange(_ obj: Notification) { hostChanged() }
+    func comboBoxSelectionDidChange(_ notification: Notification) { hostChanged() }
 }

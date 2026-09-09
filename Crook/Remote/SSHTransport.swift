@@ -116,12 +116,7 @@ final class SSHTransport {
         var fifo: AskpassFIFO?
         if let secret {
             fifo = AskpassFIFO(secret: secret)
-            if let f = fifo {
-                env["SSH_ASKPASS"] = f.helperPath
-                env["SSH_ASKPASS_REQUIRE"] = "force"
-                env["CROOK_ASKPASS_FIFO"] = f.fifoPath
-                env["DISPLAY"] = env["DISPLAY"] ?? ":0"   // older ssh still gates on this
-            }
+            if let f = fifo { Self.route(&env, through: f) }
             // We hold exactly one answer. Left to itself ssh would offer it
             // three times and report the same rejection three times slower.
             p.arguments = commonOptions + ["-o", "NumberOfPasswordPrompts=1"] + args
@@ -134,10 +129,14 @@ final class SSHTransport {
 
         let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
         p.standardOutput = outPipe; p.standardError = errPipe; p.standardInput = inPipe
-        do { try p.run() } catch { return (127, Data(), "\(error)") }
+        do { try p.run() } catch { fifo?.cleanup(); return (127, Data(), "\(error)") }
         fifo?.serve()
 
-        if let input { inPipe.fileHandleForWriting.write(input) }
+        // ssh can exit before it reads any of this — a refused key, a closed
+        // port — and the non-throwing write(_:) raises an ObjC exception on the
+        // resulting EPIPE, which Swift cannot catch. The throwing form fails
+        // like a function should, and the exit status says what happened.
+        if let input { try? inPipe.fileHandleForWriting.write(contentsOf: input) }
         try? inPipe.fileHandleForWriting.close()
 
         var outData = Data(), errData = Data()
@@ -153,6 +152,14 @@ final class SSHTransport {
         p.waitUntilExit()
         fifo?.cleanup()
         return (p.terminationStatus, outData, String(data: errData, encoding: .utf8) ?? "")
+    }
+
+    /// Point ssh's prompts at the FIFO.
+    private static func route(_ env: inout [String: String], through f: AskpassFIFO) {
+        env["SSH_ASKPASS"] = f.helperPath
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+        env["CROOK_ASKPASS_FIFO"] = f.fifoPath
+        env["DISPLAY"] = env["DISPLAY"] ?? ":0"   // older ssh still gates on this
     }
 
     // MARK: - connect
@@ -179,8 +186,24 @@ final class SSHTransport {
             // taken a password, and what it says when it skipped a key it
             // could not decrypt. Both are recoverable by asking. Only the
             // second attempt — made WITH a secret — is a real refusal.
-            if secret == nil, let want = Self.secretWanted(e) {
-                throw Failure.authRequired(want)
+            if secret == nil {
+                // Under BatchMode, "Permission denied (publickey)" is the same
+                // line for three situations: an encrypted key ssh skipped, no
+                // key at all, and a key that machine has never been told
+                // about. stderr cannot tell them apart; whether this Mac has an
+                // identity file can. Only checked in the case that needs it.
+                let keysOnly = e.contains("permission denied") && e.contains("publickey")
+                    && !e.contains("password") && !e.contains("keyboard-interactive")
+                let hasIdentity = keysOnly ? Self.hasIdentityFile(for: host) : true
+                if let want = Self.secretWanted(e, hasIdentity: hasIdentity) {
+                    throw Failure.authRequired(want)
+                }
+                if keysOnly && !hasIdentity {
+                    throw Failure.authFailed(
+                        "\(host) only accepts SSH keys, and this Mac doesn't have one. Turn on "
+                        + "password authentication for Remote Login on that Mac, or create a key "
+                        + "with ssh-keygen and add it there.")
+                }
             }
             if e.contains("permission denied") || e.contains("no such identity") || e.contains("authentication") {
                 throw Failure.authFailed(Self.explain(probe.err, host: host))
@@ -260,12 +283,7 @@ final class SSHTransport {
         var fifo: AskpassFIFO?
         if let secret {
             fifo = AskpassFIFO(secret: secret)
-            if let f = fifo {
-                env["SSH_ASKPASS"] = f.helperPath
-                env["SSH_ASKPASS_REQUIRE"] = "force"
-                env["CROOK_ASKPASS_FIFO"] = f.fifoPath
-                env["DISPLAY"] = env["DISPLAY"] ?? ":0"
-            }
+            if let f = fifo { Self.route(&env, through: f) }
             p.arguments = commonOptions + ["-o", "NumberOfPasswordPrompts=1", host, remotePath]
         } else {
             env["SSH_ASKPASS_REQUIRE"] = "never"
@@ -277,7 +295,10 @@ final class SSHTransport {
         p.standardOutput = outPipe
         p.standardError = FileHandle.nullDevice
 
-        do { try p.run() } catch { throw Failure.unreachable("Couldn't start ssh: \(error)") }
+        do { try p.run() } catch {
+            fifo?.cleanup()
+            throw Failure.unreachable("Couldn't start ssh: \(error)")
+        }
         fifo?.serve()
         proc = p
         toAgent = inPipe.fileHandleForWriting
@@ -373,14 +394,44 @@ final class SSHTransport {
     /// skipped because it could not decrypt it. Neither means nothing typed
     /// into a box will change the outcome, and offering a field would be a
     /// lie.
-    static func secretWanted(_ lowercasedStderr: String) -> Secret? {
+    ///
+    /// `hasIdentity` is whether this Mac has a key file ssh would offer. With
+    /// no key there is nothing a passphrase could unlock, and asking for one
+    /// sends someone looking for a key they never made.
+    static func secretWanted(_ lowercasedStderr: String, hasIdentity: Bool = true) -> Secret? {
         let e = lowercasedStderr
         if e.contains("passphrase") { return .keyPassphrase }
         guard e.contains("permission denied") || e.contains("authentications that can continue")
         else { return nil }
         if e.contains("password") || e.contains("keyboard-interactive") { return .accountPassword }
-        if e.contains("publickey") { return .keyPassphrase }
+        if e.contains("publickey") { return hasIdentity ? .keyPassphrase : nil }
         return nil
+    }
+
+    /// Whether ssh has a key file to offer this host.
+    ///
+    /// `ssh -G` prints the effective configuration for a host without
+    /// connecting, including every IdentityFile — the defaults and whatever
+    /// ~/.ssh/config adds — so the answer is ssh's own, not a guess at which
+    /// filenames it looks for this year.
+    static func hasIdentityFile(for host: String) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        p.arguments = ["-G", host]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        // If ssh itself cannot be asked, do not claim there is no key.
+        guard (try? p.run()) != nil else { return true }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        for line in text.split(separator: "\n") where line.hasPrefix("identityfile ") {
+            var path = String(line.dropFirst("identityfile ".count))
+            if path.hasPrefix("~") { path = Paths.home + path.dropFirst() }
+            if FileManager.default.fileExists(atPath: path) { return true }
+        }
+        return false
     }
 
     /// Turn ssh's stderr into something worth reading.
@@ -471,9 +522,17 @@ final class AskpassFIFO {
     /// open() return so the thread can see it is done and leave.
     func cleanup() {
         lock.lock(); finished = true; lock.unlock()
+        // The order is the whole point. A writer that has already resolved the
+        // path is parked inside open() until a reader appears; opening the
+        // read end wakes it, and it then sees `finished` and leaves. But if the
+        // read end is CLOSED before the unlink, a writer that resolves the path
+        // in that gap parks on a vnode that is about to lose its name and can
+        // never gain a reader — a thread asleep for the life of the process,
+        // holding the secret. Unlinking while the reader is still open closes
+        // that gap: a writer either finds the reader, or finds nothing at all.
         let fd = open(fifoPath, O_RDONLY | O_NONBLOCK)
-        if fd >= 0 { close(fd) }
         try? FileManager.default.removeItem(atPath: fifoPath)
+        if fd >= 0 { close(fd) }
         try? FileManager.default.removeItem(atPath: helperPath)
     }
 }

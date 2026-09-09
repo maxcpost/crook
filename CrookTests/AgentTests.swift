@@ -244,7 +244,9 @@ extension AgentTests {
         T.suite("transport — which secret ssh actually wants")
 
         typealias S = SSHTransport.Secret
-        func want(_ s: String) -> S? { SSHTransport.secretWanted(s.lowercased()) }
+        func want(_ s: String, hasIdentity: Bool = true) -> S? {
+            SSHTransport.secretWanted(s.lowercased(), hasIdentity: hasIdentity)
+        }
 
         // The default Mac. Remote Login on, no key installed.
         let fresh = "mac-mini@10.0.0.4: Permission denied (publickey,password,keyboard-interactive)."
@@ -270,6 +272,15 @@ extension AgentTests {
              want("ssh: Could not resolve hostname mac-mini") == nil)
         T.ok("A-07  nor does a host key mismatch",
              want("Host key verification failed.") == nil)
+
+        // Under BatchMode the publickey-only refusal is one line for "your key
+        // is encrypted", "you have no key", and "that key is not authorised".
+        // Whether a key file exists is the only local fact that separates
+        // them, and with none, a passphrase field is a lie.
+        T.ok("A-08  a publickey-only refusal with no key on this Mac wants no secret",
+             want("Permission denied (publickey).", hasIdentity: false) == nil)
+        T.ok("A-09  but a password offer still wants a password, key or no key",
+             want("Permission denied (publickey,password).", hasIdentity: false) == .accountPassword)
     }
 
     /// The askpass FIFO has to answer more than once.

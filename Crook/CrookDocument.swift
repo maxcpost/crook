@@ -65,29 +65,160 @@ final class CrookDocument: NSDocument {
     /// write has to go through the provider, and must not clear the dirty flag
     /// until the far side has confirmed it.
     @IBAction override func save(_ sender: Any?) {
-        guard let providerID = remoteProviderID, let url = fileURL else {
-            super.save(sender); return
-        }
+        guard remoteProviderID != nil else { super.save(sender); return }
+        let outcome = saveRemote()
+        if case .saved = outcome { return }
+        present(outcome)
+    }
+
+    enum RemoteSave {
+        case saved
+        case notConnected
+        case failed(Error)
+    }
+
+    /// Write the buffer to the far machine. Anything but .saved means nothing
+    /// was written and the buffer is exactly as it was. Presents nothing, so
+    /// it can be called from a close sheet, a menu item, or a test alike.
+    func saveRemote() -> RemoteSave {
+        guard let providerID = remoteProviderID, let url = fileURL else { return .notConnected }
         let p = Providers.current
-        guard p.id == providerID, p.isConnected else {
+        guard p.id == providerID, p.isConnected else { return .notConnected }
+        do {
+            let bytes = try data(ofType: "net.daringfireball.markdown")
+            try p.write(bytes, to: url.path)
+            updateChangeCount(.changeCleared)
+            SeenStore.shared.markSeen(url)
+            return .saved
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private func present(_ outcome: RemoteSave) {
+        switch outcome {
+        case .saved:
+            return
+        case .failed(let error):
+            presentError(error)
+        case .notConnected:
             // Never silently. The buffer is authoritative and stays exactly as
             // it is; the user decides what to do about the connection.
             let a = NSAlert()
             a.messageText = "Not connected to that machine."
             a.informativeText = "Your edits are still here and unchanged. Reconnect, and save again."
             a.addButton(withTitle: "OK")
-            if let w = windowControllers.first?.window { a.beginSheetModal(for: w) { _ in } }
-            else { a.runModal() }
+            if let w = windowForSheet { a.beginSheetModal(for: w) { _ in } } else { a.runModal() }
+        }
+    }
+
+    /// Where this document's bytes live, for a sentence.
+    private var machineName: String {
+        guard let id = remoteProviderID else { return "this Mac" }
+        let p = Providers.current
+        return p.id == id ? p.displayName : "the machine it came from"
+    }
+
+    // MARK: - closing
+
+    /// True when closing this document would lose something only the user can
+    /// decide about. Exposed so the decision can be tested without a window.
+    var needsSaveDecisionBeforeClosing: Bool {
+        remoteProviderID != nil && isDocumentEdited
+    }
+
+    /// autosavesInPlace is true, so AppKit does not ask "Save changes?" on
+    /// close — it autosaves and closes. For a remote document autosave() below
+    /// returns success having saved nothing, which turned ⌘W and ⌘Q into a
+    /// silent discard of every unsaved edit. The question AppKit skips is asked
+    /// here instead, in its own words, and the answer goes back through the
+    /// same delegate/selector contract AppKit expects.
+    override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
+                           contextInfo: UnsafeMutableRawPointer?) {
+        guard needsSaveDecisionBeforeClosing else {
+            super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector,
+                           contextInfo: contextInfo)
             return
         }
-        do {
-            let bytes = try data(ofType: "net.daringfireball.markdown")
-            try p.write(bytes, to: url.path)
-            updateChangeCount(.changeCleared)
-            SeenStore.shared.markSeen(url)
-        } catch {
-            presentError(error)
+        let finish = { (shouldClose: Bool) in
+            Self.answer(delegate, shouldCloseSelector, document: self,
+                        shouldClose: shouldClose, contextInfo: contextInfo)
         }
+        let name = fileURL?.lastPathComponent ?? displayName ?? "this file"
+        let alert = NSAlert()
+        alert.messageText = "Do you want to save the changes made to \(name)?"
+        alert.informativeText = "This file lives on \(machineName). "
+            + "Your changes will be lost if you don't save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don't Save")
+        let decide: (NSApplication.ModalResponse) -> Void = { [self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                let outcome = saveRemote()
+                if case .saved = outcome { finish(true) } else { present(outcome); finish(false) }
+            case .alertThirdButtonReturn:
+                updateChangeCount(.changeCleared)
+                finish(true)
+            default:
+                finish(false)
+            }
+        }
+        if let w = windowForSheet { alert.beginSheetModal(for: w, completionHandler: decide) }
+        else { decide(alert.runModal()) }
+    }
+
+    /// -document:shouldClose:contextInfo:, sent by hand. There is no Swift
+    /// spelling for "call this selector with these three arguments".
+    private static func answer(_ delegate: Any, _ selector: Selector?, document: NSDocument,
+                               shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        guard let sel = selector, let target = delegate as? NSObject, target.responds(to: sel),
+              let imp = target.method(for: sel) else { return }
+        typealias Reply = @convention(c) (AnyObject, Selector, AnyObject, Bool, UnsafeMutableRawPointer?) -> Void
+        unsafeBitCast(imp, to: Reply.self)(target, sel, document, shouldClose, contextInfo)
+    }
+
+    // MARK: - identity
+
+    /// The registered document for a path ON a machine, if there is one.
+    ///
+    /// A dirty document navigated away from stays registered so its edits
+    /// survive; coming back to that path must find it rather than fetch the
+    /// far machine's bytes and show those under the same name. The machine is
+    /// part of the key, because the same path exists on more than one.
+    static func registeredRemote(url: URL, providerID: String) -> CrookDocument? {
+        let want = url.standardizedFileURL.path
+        return NSDocumentController.shared.documents.first { d in
+            guard let c = d as? CrookDocument, c.remoteProviderID == providerID,
+                  let u = c.fileURL else { return false }
+            return u.standardizedFileURL.path == want
+        } as? CrookDocument
+    }
+
+    // MARK: - file presentation
+
+    // NSDocument is an NSFilePresenter for its fileURL, and reacts to that path
+    // changing on THIS disk: a clean document is reverted from the file, a
+    // deleted one is closed. A remote document's fileURL names a path on
+    // another machine, and when the same path happens to exist here — the same
+    // username on both Macs is all it takes — those reactions would replace
+    // the mini's text with the laptop's, or close the document because a
+    // local file went away. The agent on the far side reports changes to the
+    // file that actually backs this document; the local presenter is ignored.
+
+    override func presentedItemDidChange() {
+        guard remoteProviderID == nil else { return }
+        super.presentedItemDidChange()
+    }
+
+    override func presentedItemDidMove(to newURL: URL) {
+        guard remoteProviderID == nil else { return }
+        super.presentedItemDidMove(to: newURL)
+    }
+
+    override func accommodatePresentedItemDeletion(completionHandler: @escaping (Error?) -> Void) {
+        guard remoteProviderID == nil else { completionHandler(nil); return }
+        super.accommodatePresentedItemDeletion(completionHandler: completionHandler)
     }
 
     // CodeMirror owns text undo. Transaction.addToHistory.of(false) also calls

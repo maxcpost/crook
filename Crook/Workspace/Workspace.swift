@@ -26,8 +26,10 @@ final class Workspace {
     /// before machines existed keeps working untouched.
     private var defaultsKey: String {
         let p = Providers.current
-        return p.isLocal ? "CrookImportedProjects" : "CrookImportedProjects::\(p.id)"
+        return p.isLocal ? "CrookImportedProjects" : Self.importedKey(forProviderID: p.id)
     }
+
+    static func importedKey(forProviderID id: String) -> String { "CrookImportedProjects::\(id)" }
 
     // MARK: - node
 
@@ -281,9 +283,21 @@ final class Workspace {
 
         // One `exists` answer per distinct candidate. Backtracking revisits
         // prefixes, and over a link each of those is a round trip.
+        //
+        // And a budget, because over a link the worst case is the one that
+        // matters. A slug whose project was deleted resolves nowhere, and an
+        // unbounded search then tries every way of re-joining the remaining
+        // components — quadratic in their number, each try a stat on the far
+        // machine, all before the picker can draw. Twice the components plus a
+        // few covers the shortest-first walk and the decoy case it exists for;
+        // anything needing more is a stale slug, whose right answer is nil.
         var known: [String: Bool] = [:]
+        var probes = 0
+        let budget = parts.count * 2 + 4
         func exists(_ path: String) -> Bool {
             if let k = known[path] { return k }
+            guard probes < budget else { return false }
+            probes += 1
             let v = p.exists(path)
             known[path] = v
             return v
@@ -370,7 +384,7 @@ final class Workspace {
     /// while a connection is being established — the exact moment the roots
     /// have to be computed.
     static func importedPaths(forProviderID id: String) -> [String] {
-        UserDefaults.standard.array(forKey: "CrookImportedProjects::\(id)") as? [String] ?? []
+        UserDefaults.standard.array(forKey: importedKey(forProviderID: id)) as? [String] ?? []
     }
 
     /// Everything the agent on `providerID` is allowed to serve.

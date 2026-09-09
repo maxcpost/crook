@@ -98,5 +98,84 @@ enum DocumentLifetimeTests {
         escaped?.close()
         T.ok("L-10  closing releases it, so navigation does not leak documents",
              !NSDocumentController.shared.documents.contains { $0 === escaped })
+
+        closing()
+        identity()
+    }
+
+    /// What happens to unsaved edits when the window closes or the app quits.
+    ///
+    /// autosavesInPlace is true, so AppKit does not ask "Save changes?" on
+    /// close — it autosaves and closes. The remote override of autosave()
+    /// reported success while saving nothing, so ⌘W and ⌘Q closed a dirty
+    /// remote document and the edits went nowhere. Review finding, and the
+    /// worst kind: silent.
+    static func closing() {
+        T.suite("documents — closing one with unsaved remote edits")
+
+        let url = URL(fileURLWithPath: "/Users/some-other-mac/.claude/skills/x/SKILL.md")
+        guard let doc = try? CrookDocument.makeRemote(
+            data: Data("# x\n".utf8), url: url, providerID: "ssh:test") else {
+            T.ok("L-11  a remote document is built", false); return
+        }
+        defer { doc.updateChangeCount(.changeCleared); doc.close() }
+        doc.updateChangeCount(.changeDone)
+
+        // The machine is not current (tests run against the local provider),
+        // which is exactly the state after "Work Locally" or a dropped link.
+        var saved = false
+        if case .saved = doc.saveRemote() { saved = true }
+        T.ok("L-11  saving while its machine is not connected refuses", !saved)
+        T.ok("L-12  and the edits stay, dirty, in the buffer", doc.isDocumentEdited)
+
+        // A dirty remote document must never be closable through the
+        // autosave path, because autosave cannot save it. The decision is
+        // exposed so it can be tested without a window.
+        T.ok("L-13  a dirty remote document needs the user's answer before it closes",
+             doc.needsSaveDecisionBeforeClosing)
+        doc.updateChangeCount(.changeCleared)
+        T.ok("L-14  a clean one does not", !doc.needsSaveDecisionBeforeClosing)
+
+        let local = CrookDocument()
+        local.updateChangeCount(.changeDone)
+        T.ok("L-15  and a local document is AppKit's business as always",
+             !local.needsSaveDecisionBeforeClosing)
+    }
+
+    /// The same absolute path can exist on two machines. /Users/max/.claude on
+    /// the laptop and /Users/max/.claude on the mini are different files, and
+    /// two documents for them must never be confused for each other.
+    static func identity() {
+        T.suite("documents — one path, two machines")
+
+        let url = URL(fileURLWithPath: "/Users/max/.claude/CLAUDE.md")
+        guard let far = try? CrookDocument.makeRemote(
+            data: Data("far\n".utf8), url: url, providerID: "ssh:mini") else {
+            T.ok("L-16  a remote document is built", false); return
+        }
+        defer { far.close() }
+
+        // Navigation dedup: the document a window should reuse for (url, machine).
+        T.ok("L-16  a registered remote document is found by its path and machine",
+             CrookDocument.registeredRemote(url: url, providerID: "ssh:mini") === far)
+        T.ok("L-17  and not by its path on some other machine",
+             CrookDocument.registeredRemote(url: url, providerID: "ssh:other") == nil)
+
+        // AppKit dedup: openDocument(withContentsOf:) asks the controller for
+        // an already-open document at this URL. While this window is looking
+        // at the LOCAL disk, a remote document at the same path must not be
+        // the answer, or the mini's text shows up under the laptop's file.
+        let controller = CrookDocumentController()
+        controller.addDocument(far)
+        defer { controller.removeDocument(far) }
+        T.ok("L-18  a local open of that path does not get the remote document",
+             controller.document(for: url) == nil)
+
+        let here = CrookDocument()
+        here.fileURL = url
+        controller.addDocument(here)
+        defer { controller.removeDocument(here); here.close() }
+        T.ok("L-19  it gets the local one, even though the remote was registered first",
+             controller.document(for: url) === here)
     }
 }
