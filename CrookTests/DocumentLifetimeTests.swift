@@ -140,6 +140,16 @@ enum DocumentLifetimeTests {
         local.updateChangeCount(.changeDone)
         T.ok("L-15  and a local document is AppKit's business as always",
              !local.needsSaveDecisionBeforeClosing)
+
+        // The first keystroke. NSDocument asks whether autosaving would be
+        // safe, and its default answer inspects fileURL on this disk — a path
+        // that, for a remote document, exists on another machine. Left alone
+        // it produced "The file cannot be found. You can duplicate this
+        // document…" the moment anyone typed.
+        var typingIsSafe = true
+        do { try doc.checkAutosavingSafety() } catch { typingIsSafe = false }
+        T.ok("L-20  editing a remote document is never 'unsafe' on account of this disk",
+             typingIsSafe)
     }
 
     /// The same absolute path can exist on two machines. /Users/max/.claude on

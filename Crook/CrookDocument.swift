@@ -239,6 +239,22 @@ final class CrookDocument: NSDocument {
                        completionHandler: completionHandler)
     }
 
+    /// The "cannot be found — Duplicate?" alert.
+    ///
+    /// When an autosaving document is edited, NSDocument first asks whether
+    /// saving would be safe — and its default answer looks at the file at
+    /// fileURL on THIS disk. For a remote document that path names a file on
+    /// another machine, so the check finds nothing there and, on the first
+    /// keystroke, offers to duplicate the document rather than lose changes
+    /// to a file it believes was deleted. AppKit's header names this method as
+    /// the source of that alert and says overriding it without calling super
+    /// removes the check. The file is where it always was; the agent on the
+    /// far side is what knows whether it changed.
+    override func checkAutosavingSafety() throws {
+        guard remoteProviderID == nil else { return }
+        try super.checkAutosavingSafety()
+    }
+
     /// Every local write NSDocument performs funnels through here — autosave,
     /// Save As, and the review AppKit runs at termination. Refusing at the
     /// choke point is what makes "a remote file is never written locally" a
