@@ -276,9 +276,11 @@ final class WorkspaceWindowController: NSWindowController {
                         NSLog("Crook: could not read \(url.path) from \(provider.displayName)")
                         return
                     }
-                    let next = CrookDocument()
-                    do { try next.adoptRemote(data: data, url: url, providerID: provider.id) }
-                    catch {
+                    let next: CrookDocument
+                    do {
+                        next = try CrookDocument.makeRemote(
+                            data: data, url: url, providerID: provider.id)
+                    } catch {
                         NSLog("Crook: could not decode \(url.lastPathComponent): \(error)")
                         return
                     }
@@ -312,6 +314,22 @@ final class WorkspaceWindowController: NSWindowController {
                 previous.close()
             }
         }
+        // Drop whatever the window still points at before attaching the next
+        // document, unconditionally.
+        //
+        // This is the line the crash happened on. -[NSDocument
+        // addWindowController:] reads the controller's CURRENT document and
+        // sends it removeWindowController:, and `document` is unowned(unsafe) —
+        // AppKit does not check it, because it trusts that a document which
+        // died removed itself first. The cleanup above only runs when the cast
+        // to CrookDocument succeeds, so anything else there was carried
+        // straight into AppKit's hands; a freed document whose memory had been
+        // reused by CoreUI arrived as _CUIInternalLinkRendition and took the
+        // app down.
+        //
+        // Assigning nil costs nothing and never messages the old value, so it
+        // is safe even when that value is exactly the thing we must not touch.
+        document = nil
         next.addWindowController(self)
         next.attach(to: editor)
         syncTitle(url)

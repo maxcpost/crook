@@ -27,6 +27,31 @@ final class CrookDocument: NSDocument {
     /// without being asked.
     private(set) var remoteProviderID: String?
 
+    /// Build a document for bytes that live on another machine, and give it an
+    /// owner.
+    ///
+    /// The owner is the whole point. A local document is owned by
+    /// NSDocumentController — openDocument(withContentsOf:) puts it in the
+    /// `documents` array, and that array is what keeps it alive. A remote
+    /// document cannot go through that call, so it was built with a bare
+    /// CrookDocument() and owned by nobody: `editor.owner` is weak,
+    /// NSWindowController.document is unowned(unsafe), and addWindowController
+    /// makes the DOCUMENT retain the controller rather than the reverse. Its
+    /// lifetime was then whatever AppKit happened to be holding it for, which
+    /// is not a lifetime. When it went, the window controller was left with a
+    /// dangling pointer and the next file opened crashed inside
+    /// -[NSDocument addWindowController:].
+    ///
+    /// Registering here gives remote and local documents one ownership model
+    /// instead of two, and makes install()'s promise that a dirty document
+    /// survives navigation true for remote files as well.
+    static func makeRemote(data: Data, url: URL, providerID: String) throws -> CrookDocument {
+        let doc = CrookDocument()
+        try doc.adoptRemote(data: data, url: url, providerID: providerID)
+        NSDocumentController.shared.addDocument(doc)
+        return doc
+    }
+
     /// Load bytes that arrived from a provider rather than from a URL.
     /// NSDocumentController cannot open these: it checks the file exists on
     /// THIS machine first, and for a remote path it never does.
@@ -69,6 +94,38 @@ final class CrookDocument: NSDocument {
     // state.addMapping(), which keeps older undo entries positioned across an
     // external rewrite; reimplementing that in NSUndoManager would mean porting
     // ChangeSet inversion (S03 §5).
+    /// The class comment has always said autosave-in-place is disabled for
+    /// remote documents. Nothing implemented it, and it did not show because
+    /// these documents lived for a few milliseconds. Now that one has a real
+    /// owner it lives as long as the window does, and AppKit would autosave it
+    /// to `fileURL` — a path naming ANOTHER machine, interpreted against this
+    /// disk. Writing another Mac's path onto this one is worse than the crash
+    /// it would have replaced.
+    override func autosave(withImplicitCancellability implicitlyCancellable: Bool,
+                           completionHandler: @escaping (Error?) -> Void) {
+        guard remoteProviderID == nil else { completionHandler(nil); return }
+        super.autosave(withImplicitCancellability: implicitlyCancellable,
+                       completionHandler: completionHandler)
+    }
+
+    /// Every local write NSDocument performs funnels through here — autosave,
+    /// Save As, and the review AppKit runs at termination. Refusing at the
+    /// choke point is what makes "a remote file is never written locally" a
+    /// guarantee rather than a list of callers someone remembered to cover.
+    /// ⌘S is unaffected: save(_:) sends the bytes over the provider and never
+    /// reaches this.
+    override func writeSafely(to url: URL, ofType typeName: String,
+                              for saveOperation: NSDocument.SaveOperationType) throws {
+        guard remoteProviderID == nil else {
+            throw NSError(domain: "Crook", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "This file lives on another machine.",
+                NSLocalizedRecoverySuggestionErrorKey:
+                    "Save writes it back over the connection. Crook does not copy it onto this Mac.",
+            ])
+        }
+        try super.writeSafely(to: url, ofType: typeName, for: saveOperation)
+    }
+
     override var hasUndoManager: Bool {
         get { false }
         set { }

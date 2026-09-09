@@ -277,22 +277,38 @@ final class Workspace {
     /// back together when the split form does not exist.
     static func decodeSlug(_ slug: String) -> String? {
         let parts = slug.dropFirst().split(separator: "-", omittingEmptySubsequences: false).map(String.init)
-        var path = ""
-        var i = 0
         let p = Providers.current
-        while i < parts.count {
-            var candidate = path + "/" + parts[i]
+
+        // One `exists` answer per distinct candidate. Backtracking revisits
+        // prefixes, and over a link each of those is a round trip.
+        var known: [String: Bool] = [:]
+        func exists(_ path: String) -> Bool {
+            if let k = known[path] { return k }
+            let v = p.exists(path)
+            known[path] = v
+            return v
+        }
+
+        // Taking the first component that exists is not enough, because a
+        // shorter one existing does not mean it is the right one. A project at
+        // …/T/crook-slug-1 sits beside a directory called …/T/crook, and the
+        // greedy walk took `crook`, then failed on the rest and returned nil —
+        // the project simply vanished from the picker. Any name that extends a
+        // real sibling does this: `atlas` beside `atlas-relay`, `web` beside
+        // `web-ui`. So try the shortest match first, and if the REMAINDER
+        // cannot be resolved, come back and take a longer one.
+        func walk(_ prefix: String, _ i: Int) -> String? {
+            guard i < parts.count else { return prefix.isEmpty ? nil : prefix }
+            var candidate = prefix + "/" + parts[i]
             var j = i
-            // Extend with further "-"-joined components while nothing exists.
-            while !p.exists(candidate), j + 1 < parts.count {
+            while true {
+                if exists(candidate), let done = walk(candidate, j + 1) { return done }
+                guard j + 1 < parts.count else { return nil }
                 j += 1
                 candidate += "-" + parts[j]
             }
-            guard p.exists(candidate) else { return nil }
-            path = candidate
-            i = j + 1
         }
-        return path.isEmpty ? nil : path
+        return walk("", 0)
     }
 
     private func prettySlug(_ slug: String) -> String {

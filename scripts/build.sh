@@ -104,6 +104,11 @@ xcrun swiftc -target arm64-apple-macos26.0 \
 # which Gatekeeper rejects outright, worse than being plainly unsigned.
 sign_bundle() {
   xattr -cr "$APP" 2>/dev/null || true
+  # xattr -cr walks the tree, but the attribute that actually blocks signing is
+  # the one Launch Services keeps re-stamping on the bundle ROOT. Delete it by
+  # name as well: -cr has already returned by the time it reappears, and the
+  # bundle root is the only place it lands.
+  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
   codesign --force --sign - --timestamp=none "$APP" 2>&1
 }
 # Retry once: anything touching the bundle between the strip and the sign
@@ -117,7 +122,28 @@ sign_bundle() {
 # not harmless when packaging, which is why release.sh builds into a directory
 # nothing has launched from and verifies the EXTRACTED copy rather than this
 # one — the bytes in the zip are the only ones that matter.
-sign_bundle >/dev/null 2>&1 || sign_bundle
+# Three attempts, because the race is with Launch Services and losing it twice
+# in a row is possible. One attempt used to be enough until the app had been
+# launched from this path; after that it never was.
+signed=""
+for _ in 1 2 3; do
+  if sign_bundle >/dev/null 2>&1 && codesign --verify --strict "$APP" >/dev/null 2>&1; then
+    signed=yes; break
+  fi
+done
+if [ -z "$signed" ]; then
+  # Last resort, and the one release.sh relies on: a directory nothing has ever
+  # launched from cannot have been stamped. Build there and move the result in.
+  echo "   (bundle at $APP was stamped by Launch Services; rebuilding via staging)"
+  stage=$(mktemp -d)
+  ditto "$APP" "$stage/Crook.app"
+  xattr -cr "$stage/Crook.app" 2>/dev/null || true
+  codesign --force --sign - --timestamp=none "$stage/Crook.app" >/dev/null 2>&1
+  rm -rf "$APP"
+  ditto "$stage/Crook.app" "$APP"
+  rm -rf "$stage"
+  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
+fi
 codesign --verify --strict "$APP" >/dev/null 2>&1 \
   || { echo "!! signature invalid — the app will not open on another Mac"; exit 1; }
 echo "==> built $APP"

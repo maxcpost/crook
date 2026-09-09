@@ -12,6 +12,7 @@ if want("diff")     { DiffTests.run(); DiffTests.unified() }
 if want("validate") { ValidationTests.run() }
 
 if want("agent")    { AgentTests.run(); AgentTests.transport(); AgentTests.authClassification(); AgentTests.askpass(); AgentTests.latency() }
+if want("doclife") { DocumentLifetimeTests.run() }
 if want("regress")  { RegressionTests.run() }
 
 exit(T.summary())

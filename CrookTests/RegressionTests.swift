@@ -71,5 +71,40 @@ enum RegressionTests {
              Workspace.decodeSlug(slug) ?? "nil", real.path)
         T.ok("R-07b and the hyphens were the hard part",
              real.path.contains("atlas-relay") && real.path.contains("web-ui"))
+
+        // R-07c: the decoy. A directory whose name is a PREFIX of the one we
+        // want, in the same parent, derails a greedy decoder: it takes the
+        // short match, cannot resolve the rest, and gives up — and the real
+        // project silently never appears in the picker. Not exotic at all;
+        // it is `web` beside `web-ui`, or `atlas` beside `atlas-relay`.
+        //
+        // R-07 hit this only by accident. WebKit creates a directory called
+        // "crook" in TMPDIR while the suite runs, and the fixture above is
+        // "crook-slug-<pid>", so R-07 passed or failed on whether WebKit had
+        // started yet. This builds the decoy on purpose instead.
+        let decoyBase = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("crook-decoy-\(ProcessInfo.processInfo.processIdentifier)",
+                                    isDirectory: true)
+        let wanted = decoyBase.appendingPathComponent("atlas-relay/web-ui", isDirectory: true)
+            .standardizedFileURL
+        try? fmgr.createDirectory(at: wanted, withIntermediateDirectories: true)
+        for trap in ["atlas", "atlas-relay/web"] {
+            try? fmgr.createDirectory(at: decoyBase.appendingPathComponent(trap, isDirectory: true),
+                                      withIntermediateDirectories: true)
+        }
+        defer { try? fmgr.removeItem(at: decoyBase) }
+
+        func slugFor(_ path: String) -> String {
+            "-" + path.dropFirst().replacingOccurrences(of: "/", with: "-")
+        }
+        T.eq("R-07c a shorter sibling does not swallow the path it prefixes",
+             Workspace.decodeSlug(slugFor(wanted.path)) ?? "nil", wanted.path)
+
+        let decoy = decoyBase.appendingPathComponent("atlas", isDirectory: true).standardizedFileURL
+        T.eq("R-07d and the decoy still decodes to itself",
+             Workspace.decodeSlug(slugFor(decoy.path)) ?? "nil", decoy.path)
+
+        T.ok("R-07e a slug for a path that does not exist is still nil",
+             Workspace.decodeSlug(slugFor(decoyBase.appendingPathComponent("nope-not-here").path)) == nil)
     }
 }
