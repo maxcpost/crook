@@ -210,7 +210,7 @@ extension AgentTests {
         let t = SSHTransport(host: "crook-no-such-host.invalid")
         let began = Date()
         var caught: Error?
-        do { try t.connect(passphrase: nil) } catch { caught = error }
+        do { try t.connect(secret: nil) } catch { caught = error }
         let took = Date().timeIntervalSince(began)
 
         T.ok("X-01  an unresolvable host fails rather than hanging", caught != nil)
@@ -230,6 +230,90 @@ extension AgentTests {
         do { _ = try t.send(["op": "ping"], timeout: 2) } catch { sendFailed = true }
         T.ok("X-05  requests on a dead transport fail immediately", sendFailed)
         T.ok("X-06  and it does not claim to be running", !t.isRunning)
+    }
+
+    /// Reading ssh's refusal for the one thing that would fix it.
+    ///
+    /// These are real stderr lines. The distinction they encode is not
+    /// cosmetic: a Mac with Remote Login freshly switched on offers password
+    /// auth and nothing else, so calling its refusal a hard failure — which is
+    /// what shipped — locks out everyone who has not made a key. Getting the
+    /// KIND right matters just as much, because a passphrase and a login
+    /// password are different things to go and find.
+    static func authClassification() {
+        T.suite("transport — which secret ssh actually wants")
+
+        typealias S = SSHTransport.Secret
+        func want(_ s: String) -> S? { SSHTransport.secretWanted(s.lowercased()) }
+
+        // The default Mac. Remote Login on, no key installed.
+        let fresh = "mac-mini@10.0.0.4: Permission denied (publickey,password,keyboard-interactive)."
+        T.ok("A-01  a Mac offering password auth asks for a password",
+             want(fresh) == .accountPassword)
+
+        T.ok("A-02  keyboard-interactive alone counts as a password",
+             want("Permission denied (keyboard-interactive).") == .accountPassword)
+
+        // Keys only, and the key on disk is encrypted: ssh skips it silently
+        // under BatchMode and reports the same one-line refusal.
+        T.ok("A-03  a publickey-only refusal asks for the key's passphrase",
+             want("Permission denied (publickey).") == .keyPassphrase)
+
+        T.ok("A-04  an explicit passphrase prompt is a passphrase",
+             want("Enter passphrase for key '/Users/x/.ssh/id_ed25519':") == .keyPassphrase)
+
+        // Offering a field here would be a lie — no secret reopens a closed
+        // port or resolves a name that does not exist.
+        T.ok("A-05  an unreachable host wants no secret",
+             want("ssh: connect to host mac-mini port 22: Operation timed out") == nil)
+        T.ok("A-06  nor does a name that will not resolve",
+             want("ssh: Could not resolve hostname mac-mini") == nil)
+        T.ok("A-07  nor does a host key mismatch",
+             want("Host key verification failed.") == nil)
+    }
+
+    /// The askpass FIFO has to answer more than once.
+    ///
+    /// ssh runs the askpass program afresh for every prompt. The version that
+    /// wrote once left the second `cat` reading a closed pipe and returning
+    /// nothing, which ssh reports as a wrong password — the right secret,
+    /// refused, with no way to tell why.
+    static func askpass() {
+        T.suite("transport — answering ssh more than once")
+
+        guard let f = AskpassFIFO(secret: "hunter2") else {
+            T.ok("K-01  the FIFO could be created", false)
+            return
+        }
+        f.serve()
+
+        // Exactly what the helper script does, twice.
+        func ask() -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/cat")
+            p.arguments = [f.fifoPath]
+            let out = Pipe()
+            p.standardOutput = out
+            guard (try? p.run()) != nil else { return "" }
+            // A FIFO with no writer blocks in open() forever. If serve() ever
+            // stops answering, this test must fail rather than hang the suite.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                if p.isRunning { p.terminate() }
+            }
+            let d = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return String(data: d, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+
+        T.ok("K-01  the first prompt is answered", ask() == "hunter2")
+        T.ok("K-02  and so is the second", ask() == "hunter2")
+
+        f.cleanup()
+        T.ok("K-03  cleanup removes the pipe",
+             !FileManager.default.fileExists(atPath: f.fifoPath))
+        T.ok("K-04  and the helper script with it",
+             !FileManager.default.fileExists(atPath: f.helperPath))
     }
 }
 

@@ -21,11 +21,13 @@ final class ConnectSheet: NSViewController {
     private let connectButton = NSButton()
     private let cancelButton = NSButton()
 
-    /// Shown only when ssh says the key is locked. Asking up front would train
-    /// people to type a passphrase Crook usually does not need.
+    /// Shown only when ssh says a secret is needed, and labelled with the one
+    /// it actually asked for — a key passphrase and an account password are
+    /// different things to go and find. Asking up front would train people to
+    /// type something Crook usually does not need at all.
     private let passField = NSSecureTextField()
-    private let passLabel = NSTextField(labelWithString: "Passphrase for the key")
-    private var needsPassphrase = false
+    private let passLabel = NSTextField(labelWithString: "")
+    private var wanted: SSHTransport.Secret?
 
     var onConnected: ((RemoteProvider) -> Void)?
 
@@ -129,8 +131,8 @@ final class ConnectSheet: NSViewController {
         guard !host.isEmpty else { return }
         setBusy(true, "Connecting to \(host)…")
 
-        let pass = needsPassphrase && !passField.stringValue.isEmpty ? passField.stringValue : nil
-        Machines.shared.connect(host: host, passphrase: pass) { [weak self] result in
+        let pass = wanted != nil && !passField.stringValue.isEmpty ? passField.stringValue : nil
+        Machines.shared.connect(host: host, secret: pass) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let provider):
@@ -139,12 +141,20 @@ final class ConnectSheet: NSViewController {
                 self.onConnected?(provider)
 
             case .failure(let error):
-                if case SSHTransport.Failure.authRequired = error {
+                if case SSHTransport.Failure.authRequired(let want) = error {
                     // Only now, and only because ssh said so.
-                    self.needsPassphrase = true
+                    self.wanted = want
+                    self.passLabel.stringValue = want.prompt
                     self.passLabel.isHidden = false
                     self.passField.isHidden = false
-                    self.setBusy(false, "That key is protected. Enter its passphrase to continue.")
+                    self.passField.stringValue = ""
+                    switch want {
+                    case .keyPassphrase:
+                        self.setBusy(false, "That key is locked. Enter its passphrase to continue.")
+                    case .accountPassword:
+                        self.setBusy(false, "\(host) wants a password. This is the login "
+                            + "password for your account on that Mac.")
+                    }
                     self.view.window?.makeFirstResponder(self.passField)
                     return
                 }

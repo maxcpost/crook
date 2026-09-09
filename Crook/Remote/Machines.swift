@@ -64,12 +64,12 @@ final class Machines {
     /// Runs off the main thread: probing, installing and starting the session
     /// are all network work, and a spinner that cannot spin is worse than a
     /// wait. The completion lands back on main.
-    func connect(host: String, passphrase: String? = nil,
+    func connect(host: String, secret: String? = nil,
                  completion: @escaping (Result<RemoteProvider, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let t = SSHTransport(host: host)
             do {
-                try t.connect(passphrase: passphrase)
+                try t.connect(secret: secret)
             } catch {
                 DispatchQueue.main.async { completion(.failure(error)) }
                 return

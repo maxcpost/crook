@@ -9,9 +9,28 @@ import Foundation
 /// simply what makes the name resolve and carries the bytes.
 final class SSHTransport {
 
+    /// Which secret ssh is missing.
+    ///
+    /// The two are different things asked of different people: a passphrase
+    /// unlocks a key that is already installed, a password is the login on the
+    /// far Mac. Labelling one as the other sends someone hunting for a key
+    /// they never made — which is most people, since enabling Remote Login
+    /// gets you password auth and nothing else.
+    enum Secret {
+        case keyPassphrase
+        case accountPassword
+
+        var prompt: String {
+            switch self {
+            case .keyPassphrase:   return "Passphrase for your SSH key"
+            case .accountPassword: return "Password for your account on that Mac"
+            }
+        }
+    }
+
     enum Failure: Error, LocalizedError {
         case unreachable(String)
-        case authRequired
+        case authRequired(Secret)
         case authFailed(String)
         case installFailed(String)
         case dropped
@@ -21,7 +40,7 @@ final class SSHTransport {
         var errorDescription: String? {
             switch self {
             case .unreachable(let d):    return d
-            case .authRequired:          return "That machine needs a passphrase."
+            case .authRequired(let s):   return s.prompt
             case .authFailed(let d):     return d
             case .installFailed(let d):  return "Couldn't install Crook's helper: \(d)"
             case .dropped:               return "The connection closed."
@@ -88,21 +107,24 @@ final class SSHTransport {
     }()
 
     /// One-shot command. Used for probing and installing, never for the session.
-    private func run(_ args: [String], input: Data? = nil, passphrase: String?,
+    private func run(_ args: [String], input: Data? = nil, secret: String?,
                      timeout: TimeInterval = 25) -> (status: Int32, out: Data, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         p.arguments = commonOptions + args
         var env = ProcessInfo.processInfo.environment
         var fifo: AskpassFIFO?
-        if let passphrase {
-            fifo = AskpassFIFO(passphrase: passphrase)
+        if let secret {
+            fifo = AskpassFIFO(secret: secret)
             if let f = fifo {
                 env["SSH_ASKPASS"] = f.helperPath
                 env["SSH_ASKPASS_REQUIRE"] = "force"
                 env["CROOK_ASKPASS_FIFO"] = f.fifoPath
                 env["DISPLAY"] = env["DISPLAY"] ?? ":0"   // older ssh still gates on this
             }
+            // We hold exactly one answer. Left to itself ssh would offer it
+            // three times and report the same rejection three times slower.
+            p.arguments = commonOptions + ["-o", "NumberOfPasswordPrompts=1"] + args
         } else {
             // Never let ssh block on a prompt Crook cannot see.
             env["SSH_ASKPASS_REQUIRE"] = "never"
@@ -143,17 +165,25 @@ final class SSHTransport {
     /// Ordered so the common case is one round trip: an up-to-date helper
     /// answers `--version` and the session starts immediately. Installing only
     /// happens on a first connect or after a Crook upgrade.
-    func connect(passphrase: String?) throws {
+    func connect(secret: String?) throws {
         let probe = run([host, "\(remotePath) --version 2>/dev/null || echo MISSING"],
-                        passphrase: passphrase)
+                        secret: secret)
 
         if probe.status != 0 {
             let e = probe.err.lowercased()
+            // Which secret, asked before "gave up".
+            //
+            // The old order called every "Permission denied" a hard failure.
+            // That is wrong twice: under BatchMode ssh never prompts, so that
+            // one line is equally what a Mac says when it would happily have
+            // taken a password, and what it says when it skipped a key it
+            // could not decrypt. Both are recoverable by asking. Only the
+            // second attempt — made WITH a secret — is a real refusal.
+            if secret == nil, let want = Self.secretWanted(e) {
+                throw Failure.authRequired(want)
+            }
             if e.contains("permission denied") || e.contains("no such identity") || e.contains("authentication") {
                 throw Failure.authFailed(Self.explain(probe.err, host: host))
-            }
-            if e.contains("passphrase") || (passphrase == nil && e.contains("batchmode")) {
-                throw Failure.authRequired
             }
             if e.contains("could not resolve") || e.contains("name or service") {
                 throw Failure.unreachable(
@@ -176,15 +206,15 @@ final class SSHTransport {
 
         let reply = String(data: probe.out, encoding: .utf8) ?? ""
         if reply.contains("MISSING") || !reply.contains("crook-agent \(Self.agentVersion)") {
-            try install(passphrase: passphrase)
+            try install(secret: secret)
         }
-        try startSession(passphrase: passphrase)
+        try startSession(secret: secret)
     }
 
     /// Push the helper. Written to a temp name and moved into place, so a
     /// connection that drops mid-copy cannot leave a half-written executable
     /// that would then be run.
-    private func install(passphrase: String?) throws {
+    private func install(secret: String?) throws {
         guard let src = Bundle.main.url(forResource: "crook-agent", withExtension: nil),
               let bin = FileManager.default.contents(atPath: src.path) else {
             throw Failure.installFailed("Crook's copy of the helper is missing from its own bundle.")
@@ -203,26 +233,27 @@ final class SSHTransport {
             "echo INSTALLED",
         ].joined(separator: "; ")
 
-        let r = run([host, script], input: bin, passphrase: passphrase, timeout: 60)
+        let r = run([host, script], input: bin, secret: secret, timeout: 60)
         guard r.status == 0, String(data: r.out, encoding: .utf8)?.contains("INSTALLED") == true else {
             throw Failure.installFailed(r.err.isEmpty ? "exit \(r.status)" : r.err.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
-    private func startSession(passphrase: String?) throws {
+    private func startSession(secret: String?) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         p.arguments = commonOptions + [host, remotePath]
         var env = ProcessInfo.processInfo.environment
         var fifo: AskpassFIFO?
-        if let passphrase {
-            fifo = AskpassFIFO(passphrase: passphrase)
+        if let secret {
+            fifo = AskpassFIFO(secret: secret)
             if let f = fifo {
                 env["SSH_ASKPASS"] = f.helperPath
                 env["SSH_ASKPASS_REQUIRE"] = "force"
                 env["CROOK_ASKPASS_FIFO"] = f.fifoPath
                 env["DISPLAY"] = env["DISPLAY"] ?? ":0"
             }
+            p.arguments = commonOptions + ["-o", "NumberOfPasswordPrompts=1", host, remotePath]
         } else {
             env["SSH_ASKPASS_REQUIRE"] = "never"
         }
@@ -319,6 +350,26 @@ final class SSHTransport {
         return try result.get()
     }
 
+    /// Which secret, if any, would make this attempt succeed.
+    ///
+    /// ssh names the methods it was willing to try in the parentheses of its
+    /// refusal — `Permission denied (publickey,password,keyboard-interactive)`
+    /// — and that list is the entire answer. Password or keyboard-interactive
+    /// on the list means a password is worth asking for. Only publickey means
+    /// the one secret that could still help is the passphrase on a key ssh
+    /// skipped because it could not decrypt it. Neither means nothing typed
+    /// into a box will change the outcome, and offering a field would be a
+    /// lie.
+    static func secretWanted(_ lowercasedStderr: String) -> Secret? {
+        let e = lowercasedStderr
+        if e.contains("passphrase") { return .keyPassphrase }
+        guard e.contains("permission denied") || e.contains("authentications that can continue")
+        else { return nil }
+        if e.contains("password") || e.contains("keyboard-interactive") { return .accountPassword }
+        if e.contains("publickey") { return .keyPassphrase }
+        return nil
+    }
+
     /// Turn ssh's stderr into something worth reading.
     private static func explain(_ raw: String, host: String) -> String {
         let line = raw.split(separator: "\n")
@@ -331,21 +382,33 @@ final class SSHTransport {
 
 // MARK: - askpass
 
-/// Feeds a passphrase to ssh without it ever touching the disk.
+/// Feeds a secret to ssh without it ever touching the disk.
 ///
-/// ssh with no controlling terminal asks its SSH_ASKPASS program for the
-/// passphrase. That program has to be a real executable, so Crook writes a
-/// two-line shell script — but the secret itself goes through a FIFO, which
-/// means it exists only in the pipe between two processes and there is nothing
-/// to shred afterwards. A temp file would have been simpler and would have left
-/// the passphrase readable on disk for as long as ssh took to start.
+/// ssh with no controlling terminal asks its SSH_ASKPASS program for whatever
+/// it needs — a key passphrase or an account password, the mechanism is the
+/// same. That program has to be a real executable, so Crook writes a two-line
+/// shell script, but the secret itself goes through a FIFO: it exists only in
+/// the pipe between two processes and there is nothing to shred afterwards. A
+/// temp file would have been simpler and would have left the secret readable
+/// on disk for as long as ssh took to start.
 final class AskpassFIFO {
     let helperPath: String
     let fifoPath: String
-    private let passphrase: String
+    private let secret: String
+    private let lock = NSLock()
+    private var finished = false
 
-    init?(passphrase: String) {
-        self.passphrase = passphrase
+    private var isFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return finished
+    }
+
+    init?(secret: String) {
+        self.secret = secret
+        // Writing into a FIFO whose reader has gone raises SIGPIPE, and the
+        // default disposition for that is to kill the process. Crook must not
+        // die because ssh gave up on a prompt a moment early.
+        Self.ignoreSIGPIPE
         let dir = Paths.support.appendingPathComponent("askpass", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
@@ -358,21 +421,45 @@ final class AskpassFIFO {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperPath)
     }
 
+    private static let ignoreSIGPIPE: Void = { signal(SIGPIPE, SIG_IGN) }()
+
     /// Opening a FIFO for writing blocks until a reader arrives, so this has to
     /// happen off the calling thread — ssh only opens its end when it decides
-    /// it actually needs the passphrase, which may be never.
+    /// it actually needs the secret, which may be never.
+    ///
+    /// It answers repeatedly rather than once. ssh runs the askpass program
+    /// afresh for every prompt, and a session can hold more than one: a key
+    /// passphrase and then a password, or the same question again after a
+    /// rejection. A writer that answered once left the next `cat` reading a
+    /// closed pipe and returning nothing, which ssh reports as a wrong
+    /// password — the confusing failure where the right secret is refused.
     func serve() {
-        let path = fifoPath, secret = passphrase
-        DispatchQueue.global(qos: .userInitiated).async {
-            let fd = open(path, O_WRONLY)
-            guard fd >= 0 else { return }
-            let line = secret + "\n"
-            _ = line.withCString { write(fd, $0, strlen($0)) }
-            close(fd)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Bounded, because ssh is bounded: NumberOfPasswordPrompts caps
+            // the far side, and an unbounded loop here would outlive the
+            // process it was serving.
+            for _ in 0..<4 {
+                guard let self, !self.isFinished else { return }
+                let fd = open(self.fifoPath, O_WRONLY)
+                guard fd >= 0 else { return }
+                // cleanup() opens the read end to release this open(); that is
+                // a wake-up, not a question, and must not be answered.
+                if self.isFinished { close(fd); return }
+                let line = self.secret + "\n"
+                _ = line.withCString { write(fd, $0, strlen($0)) }
+                close(fd)
+            }
         }
     }
 
+    /// Unlinking alone would strand the writer: a thread parked in
+    /// open(O_WRONLY) stays parked until a reader arrives, and removing the
+    /// path does not summon one. Opening the read end for an instant lets that
+    /// open() return so the thread can see it is done and leave.
     func cleanup() {
+        lock.lock(); finished = true; lock.unlock()
+        let fd = open(fifoPath, O_RDONLY | O_NONBLOCK)
+        if fd >= 0 { close(fd) }
         try? FileManager.default.removeItem(atPath: fifoPath)
         try? FileManager.default.removeItem(atPath: helperPath)
     }

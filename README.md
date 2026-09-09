@@ -131,15 +131,29 @@ which is short enough to read and does exactly what it says.
 
 ## Connecting to another Mac
 
-You need `ssh` to that machine to work from a terminal first — Crook runs the
-system `ssh` and adds nothing of its own. On the far machine that means
-**System Settings ▸ General ▸ Sharing ▸ Remote Login**.
+One thing has to be true on the far machine: **System Settings ▸ General ▸
+Sharing ▸ Remote Login**, switched on. That is the whole setup. Crook runs the
+system `ssh` and adds nothing of its own, so if that machine works from a
+terminal it works here.
 
-Then in Crook, **Connect to a Machine…** and give it the host name. On first
-connect Crook copies a ~150 KB helper to `~/.crook/` on that machine and runs
-it over the SSH session; there is nothing to install by hand and nothing
-listening on a port. If your key has a passphrase, Crook asks for it only when
-`ssh` says it needs one.
+Then in Crook, **Connect to a Machine…**. The field is filled with machines you
+have used and every `Host` alias in your `~/.ssh/config`, so usually the answer
+is already in the list. On first connect Crook copies a ~150 KB helper to
+`~/.crook/` on that machine and runs it over the SSH session; there is nothing
+to install by hand and nothing listening on a port.
+
+**You do not need to set up SSH keys.** If the far Mac asks for a password —
+which is what a Mac with Remote Login freshly enabled does — Crook asks you for
+it, and says plainly that it means your login password on that machine. If you
+do use a key and it has a passphrase, it asks for that instead. Either way it
+asks only when `ssh` says it needs to, and the answer goes to `ssh` through a
+pipe rather than a file: it is never written to disk, and Crook does not store
+it. The next connection asks again.
+
+If it cannot connect at all, the message says which end to look at — a name
+that will not resolve is a different problem from a Mac that is refusing SSH,
+and Crook names the Remote Login switch rather than repeating ssh's "connection
+refused".
 
 Worth adding to your `~/.ssh/config`, if the machine is one you keep a terminal
 open to anyway:
