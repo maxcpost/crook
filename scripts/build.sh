@@ -28,6 +28,20 @@ xcrun swiftc -O -target x86_64-apple-macos13.0 -o "$AGENT_TMP/x64" "$AGENT_SRC"
 lipo -create -output "$APP/Contents/Resources/crook-agent" "$AGENT_TMP/a64" "$AGENT_TMP/x64"
 rm -rf "$AGENT_TMP"
 
+# Sign the agent explicitly, and BEFORE the bundle is signed — signing it after
+# would break the bundle's seal over its own resources.
+#
+# swiftc ad-hoc signs the arm64 slice on its own (arm64 macOS refuses to execute
+# an unsigned Mach-O at all, so the linker has no choice). It does NOT sign the
+# cross-compiled x86_64 slice, because Intel does not require it. That slice
+# therefore shipped unsigned, which happens to run today and is exactly the kind
+# of thing a future macOS tightens. Sign both.
+codesign --force --sign - "$APP/Contents/Resources/crook-agent"
+for arch in arm64 x86_64; do
+  codesign --verify --strict --arch $arch "$APP/Contents/Resources/crook-agent" \
+    || { echo "!! agent $arch slice unsigned — it will not run on that Mac"; exit 1; }
+done
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,6 +57,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsSecureRestorableState</key><true/>
+  <!-- Projects live where people keep projects, which on most Macs is Desktop
+       or Documents — both behind TCC. Without these strings the consent prompt
+       is a bare "Crook would like to access files in your Desktop folder" with
+       no reason attached, and a prompt with no reason is a prompt people deny.
+       ~/.claude itself is not protected; the project folders are. -->
+  <key>NSDesktopFolderUsageDescription</key><string>Crook reads and edits the Claude Code files in projects you keep on your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>Crook reads and edits the Claude Code files in projects you keep in Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Crook reads and edits the Claude Code files in projects you keep in Downloads.</string>
   <!-- Editor, not Viewer: Crook writes these files, and the role is what tells
        Launch Services whether saving is a thing this app does.
 

@@ -155,8 +155,20 @@ final class SSHTransport {
             if e.contains("passphrase") || (passphrase == nil && e.contains("batchmode")) {
                 throw Failure.authRequired
             }
-            if e.contains("could not resolve") || e.contains("name or service") || e.contains("no route") {
-                throw Failure.unreachable("Can't reach \(host). Is Tailscale connected?")
+            if e.contains("could not resolve") || e.contains("name or service") {
+                throw Failure.unreachable(
+                    "Can't find \(host). Check the name, or that Tailscale is connected on both Macs.")
+            }
+            // The first-run failure, by a wide margin. ssh reached the network
+            // and found nothing listening on 22, which on a Mac means Remote
+            // Login is off — not that the machine is unreachable. Saying
+            // "connection refused" sends people to look at the network, which
+            // is the one thing that is working.
+            if e.contains("connection refused") || e.contains("operation timed out")
+                || e.contains("no route") || e.contains("connection timed out") {
+                throw Failure.unreachable(
+                    "\(host) is not accepting SSH. On that Mac, turn on System Settings ▸ "
+                    + "General ▸ Sharing ▸ Remote Login.")
             }
             if probe.status == 124 { throw Failure.timedOut("Connecting to \(host)") }
             throw Failure.unreachable(Self.explain(probe.err, host: host))

@@ -5,11 +5,16 @@ import AppKit
 /// Everything about how to reach a machine — user, port, key, jump host — is
 /// already in the user's ssh config, and Crook runs the system ssh, so asking
 /// again would only invite an answer that disagrees with the one that works in
-/// a terminal. The Advanced disclosure exists for the machine that has no
-/// config entry, and stays closed otherwise.
+/// a terminal.
+///
+/// The field is a combo box rather than a plain one so the answer can be
+/// picked instead of remembered: it is filled with the machines Crook has
+/// connected to before, then every Host alias in ~/.ssh/config. Someone who
+/// has an alias that works in a terminal never has to recall how they spelled
+/// it, and someone who does not can still type a hostname.
 final class ConnectSheet: NSViewController {
 
-    private let field = NSTextField()
+    private let field = NSComboBox()
     private let subtitle = NSTextField(wrappingLabelWithString: "")
     private let status = NSTextField(wrappingLabelWithString: "")
     private let spinner = NSProgressIndicator()
@@ -40,7 +45,21 @@ final class ConnectSheet: NSViewController {
         field.font = .systemFont(ofSize: 13)
         field.target = self
         field.action = #selector(connect)
-        if let first = Machines.shared.last ?? Machines.shared.known.first {
+        field.completes = true
+        field.numberOfVisibleItems = 8
+
+        // Machines already used come first — the answer is usually the last
+        // answer — then the ssh config, deduped against them.
+        var offered = Machines.shared.known
+        for h in Machines.shared.sshConfigHosts() where !offered.contains(h) {
+            offered.append(h)
+        }
+        field.addItems(withObjectValues: offered)
+        // A combo box with nothing in it should not show a menu button that
+        // opens onto an empty list.
+        field.isButtonBordered = !offered.isEmpty
+
+        if let first = Machines.shared.last ?? offered.first {
             field.stringValue = first
         }
 
