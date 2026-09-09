@@ -38,6 +38,15 @@ final class WorkspaceWindowController: NSWindowController {
             backing: .buffered, defer: false)
         super.init(window: window)
 
+        // The window survives its own close — the controller keeps it — and
+        // the Dock icon brings it back. What must not survive is the editor
+        // still showing a document AppKit has since closed: text that looks
+        // editable and goes nowhere. Detach and show the empty state as the
+        // window goes, so what comes back is coherent.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in self?.windowIsClosing() }
+
         let split = NSSplitViewController()
         split.splitView.dividerStyle = .thin
 
@@ -196,6 +205,43 @@ final class WorkspaceWindowController: NSWindowController {
         Machines.shared.disconnect()
         rail.reload()
         syncMachine()
+    }
+
+    /// File ▸ Close. Closes the document, not the window.
+    ///
+    /// The document decides whether it may close — a dirty remote one asks
+    /// Save / Cancel / Don't Save, a local one autosaves — and answers through
+    /// the delegate/selector contract every NSDocument uses. On yes, the window
+    /// stays and shows the empty state; the window itself closes only from its
+    /// own red button.
+    @objc func closeDocument(_ sender: Any?) {
+        guard let doc = document as? CrookDocument else { return }
+        doc.canClose(withDelegate: self,
+                     shouldClose: #selector(document(_:shouldClose:contextInfo:)),
+                     contextInfo: nil)
+    }
+
+    @objc private func document(_ doc: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        guard shouldClose else { return }
+        closeCurrentDocument()
+    }
+
+    private func windowIsClosing() {
+        if let doc = document as? CrookDocument { doc.detachFromEditor() }
+        editor.showEmptyState(true, onAddProject: { [weak self] in self?.rail.beginAddProject() },
+                              onConnect: { [weak self] in self?.beginConnect() })
+        syncTitle(nil)
+    }
+
+    /// The document's dirty state changed. Called by CrookDocument from
+    /// updateChangeCount, for both kinds of document, so the two never look
+    /// different: the title gains or loses "— Edited" (AppKit draws that only
+    /// for autosaving documents; windowTitle(forDocumentDisplayName:) draws it
+    /// for the rest) and the proxy icon shows whether what you see is what is
+    /// on disk.
+    func documentEditedStateChanged() {
+        synchronizeWindowTitleWithDocumentName()
+        refreshProxyIcon()
     }
 
     private func closeCurrentDocument() {
@@ -414,6 +460,13 @@ final class WorkspaceWindowController: NSWindowController {
         guard let button = window?.standardWindowButton(.documentIconButton) else { return }
         let symbol: String, tint: NSColor, help: String
         switch syncState {
+        case .inSync where (document as? CrookDocument)?.isDocumentEdited == true:
+            // The one state this icon never had. Its meaning is "are you
+            // looking at the bytes on disk?", and the moment you type you are
+            // not — for a local file just as much as a remote one. Accent
+            // colour, because these are YOUR changes; yellow below is Claude's.
+            symbol = "circle.fill"; tint = .controlAccentColor
+            help = "Edited · not saved yet — ⌘S writes it to \(Providers.current.isLocal ? "disk" : Providers.current.displayName)"
         case .inSync:
             symbol = "circle.fill"; tint = .tertiaryLabelColor
             help = "You are reading the bytes that are on disk"
@@ -517,13 +570,17 @@ final class WorkspaceWindowController: NSWindowController {
     func noteSnapshotBeforeOpen(_ text: String?) { pendingSnapshot = text }
 
     override func windowTitle(forDocumentDisplayName displayName: String) -> String {
-        guard let url = (document as? NSDocument)?.fileURL else { return displayName }
+        guard let doc = document as? CrookDocument, let url = doc.fileURL else { return displayName }
+        // "— Edited" is drawn by AppKit only for autosaving documents. A
+        // remote document is not one, so it is drawn here, and the two kinds
+        // read the same.
+        let edited = doc.remoteProviderID != nil && doc.isDocumentEdited ? " — Edited" : ""
         let crumbs = Workspace.shared.breadcrumb(for: url)
-        if crumbs.count > 1 { return crumbs.joined(separator: " ▸ ") }
+        if crumbs.count > 1 { return crumbs.joined(separator: " ▸ ") + edited }
         // Not in the workspace tree — a file opened from Finder, say.
         if let context = Workspace.shared.contextLabel(for: url) {
-            return "\(context) ▸ \(displayName)"
+            return "\(context) ▸ \(displayName)" + edited
         }
-        return displayName
+        return displayName + edited
     }
 }

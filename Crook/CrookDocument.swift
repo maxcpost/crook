@@ -8,7 +8,7 @@ import AppKit
 /// The document does NOT own the window. WorkspaceWindowController does, and
 /// documents attach and detach beneath it as you navigate.
 @objc(CrookDocument)
-final class CrookDocument: NSDocument {
+class CrookDocument: NSDocument {
 
     private var loadedText = NSMutableString()
     private var loadedProfile = ByteProfile(lineEnding: .lf, hasFinalNewline: true,
@@ -22,9 +22,9 @@ final class CrookDocument: NSDocument {
     /// A remote document keeps everything that makes CrookDocument correct — the
     /// byte profile, the ownership guard, the dirty tracking — and bypasses only
     /// NSDocument's file plumbing, which is built on a local URL and means
-    /// nothing across a network. Autosave-in-place is disabled for these,
-    /// because writing to another machine on a timer is not something to do
-    /// without being asked.
+    /// nothing across a network. Such a document is a CrookRemoteDocument, which
+    /// is what turns that plumbing off at the level AppKit reads it; this is the
+    /// per-instance fact the rest of the code asks about.
     private(set) var remoteProviderID: String?
 
     /// Build a document for bytes that live on another machine, and give it an
@@ -46,7 +46,7 @@ final class CrookDocument: NSDocument {
     /// instead of two, and makes install()'s promise that a dirty document
     /// survives navigation true for remote files as well.
     static func makeRemote(data: Data, url: URL, providerID: String) throws -> CrookDocument {
-        let doc = CrookDocument()
+        let doc = CrookRemoteDocument()
         try doc.adoptRemote(data: data, url: url, providerID: providerID)
         NSDocumentController.shared.addDocument(doc)
         return doc
@@ -178,6 +178,16 @@ final class CrookDocument: NSDocument {
         unsafeBitCast(imp, to: Reply.self)(target, sel, document, shouldClose, contextInfo)
     }
 
+    /// Every change to the dirty state, both directions, tells the window.
+    /// AppKit's own notification of window controllers differs between
+    /// autosaving and non-autosaving documents; this does not.
+    override func updateChangeCount(_ change: NSDocument.ChangeType) {
+        super.updateChangeCount(change)
+        for wc in windowControllers {
+            (wc as? WorkspaceWindowController)?.documentEditedStateChanged()
+        }
+    }
+
     // MARK: - identity
 
     /// The registered document for a path ON a machine, if there is one.
@@ -225,34 +235,15 @@ final class CrookDocument: NSDocument {
     // state.addMapping(), which keeps older undo entries positioned across an
     // external rewrite; reimplementing that in NSUndoManager would mean porting
     // ChangeSet inversion (S03 §5).
-    /// The class comment has always said autosave-in-place is disabled for
-    /// remote documents. Nothing implemented it, and it did not show because
-    /// these documents lived for a few milliseconds. Now that one has a real
-    /// owner it lives as long as the window does, and AppKit would autosave it
-    /// to `fileURL` — a path naming ANOTHER machine, interpreted against this
-    /// disk. Writing another Mac's path onto this one is worse than the crash
-    /// it would have replaced.
+    /// A CrookRemoteDocument reports autosavesInPlace false, so AppKit never
+    /// schedules this for one. Kept as a second line: if a remote document ever
+    /// reaches here anyway, it must not write another machine's path onto this
+    /// disk, and the write guard below is the third.
     override func autosave(withImplicitCancellability implicitlyCancellable: Bool,
                            completionHandler: @escaping (Error?) -> Void) {
         guard remoteProviderID == nil else { completionHandler(nil); return }
         super.autosave(withImplicitCancellability: implicitlyCancellable,
                        completionHandler: completionHandler)
-    }
-
-    /// The "cannot be found — Duplicate?" alert.
-    ///
-    /// When an autosaving document is edited, NSDocument first asks whether
-    /// saving would be safe — and its default answer looks at the file at
-    /// fileURL on THIS disk. For a remote document that path names a file on
-    /// another machine, so the check finds nothing there and, on the first
-    /// keystroke, offers to duplicate the document rather than lose changes
-    /// to a file it believes was deleted. AppKit's header names this method as
-    /// the source of that alert and says overriding it without calling super
-    /// removes the check. The file is where it always was; the agent on the
-    /// far side is what knows whether it changed.
-    override func checkAutosavingSafety() throws {
-        guard remoteProviderID == nil else { return }
-        try super.checkAutosavingSafety()
     }
 
     /// Every local write NSDocument performs funnels through here — autosave,
@@ -420,4 +411,26 @@ final class CrookDocument: NSDocument {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { wc.rail.selfTestExpansion() }
         }
     }
+}
+
+/// A document whose bytes live on another machine.
+///
+/// It changes exactly one thing: the class-level answer to autosavesInPlace.
+/// That answer is not a preference — it is the switch NSDocument keys its
+/// entire local-file machinery off. With it on, every change-count update
+/// first runs a private check that the file at fileURL still exists on this
+/// disk, and for a path that names a file on another Mac that check fails on
+/// the first keystroke with "The file cannot be found. You can duplicate this
+/// document…". No public override reaches that check; the header's
+/// checkAutosavingSafety is a different one, and was never invoked. Answering
+/// false here is what the class comment has promised since the feature was
+/// written, made true where AppKit reads it.
+///
+/// Everything else a remote document needs is on CrookDocument and keyed off
+/// remoteProviderID: the close prompt that replaces the one AppKit skips for
+/// autosaving documents, the write over the provider, the guards on the local
+/// write path and the file-presenter reactions.
+@objc(CrookRemoteDocument)
+final class CrookRemoteDocument: CrookDocument {
+    override class var autosavesInPlace: Bool { false }
 }

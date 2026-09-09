@@ -146,10 +146,17 @@ enum DocumentLifetimeTests {
         // that, for a remote document, exists on another machine. Left alone
         // it produced "The file cannot be found. You can duplicate this
         // document…" the moment anyone typed.
-        var typingIsSafe = true
-        do { try doc.checkAutosavingSafety() } catch { typingIsSafe = false }
-        T.ok("L-20  editing a remote document is never 'unsafe' on account of this disk",
-             typingIsSafe)
+        // Autosave-in-place is the switch NSDocument keys its whole local-file
+        // machinery off — including the private pre-edit check that produced
+        // "The file cannot be found. You can duplicate this document…" on the
+        // first keystroke in a remote file. It is answered per CLASS, so a
+        // remote document has to be a class that answers no.
+        T.ok("L-20  a remote document is not an autosaving-in-place document",
+             !type(of: doc).autosavesInPlace)
+        T.ok("L-21  and a local one still is — that is most of why NSDocument is here",
+             CrookDocument.autosavesInPlace)
+        T.ok("L-22  a remote document is still a CrookDocument to everything that asks",
+             (doc as CrookDocument).remoteProviderID == "ssh:test")
     }
 
     /// The same absolute path can exist on two machines. /Users/max/.claude on

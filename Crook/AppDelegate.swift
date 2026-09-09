@@ -3,6 +3,20 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
+    /// The Dock icon, clicked while no window is showing.
+    ///
+    /// The window controller keeps its window across a close, so this is the
+    /// same window coming back, not a new one. Without this, closing the only
+    /// window left an app that was running, in the Dock, and unable to show
+    /// anything — the state people report as "it crashed".
+    func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        guard !hasVisibleWindows else { return true }
+        let wc = WorkspaceWindowController.shared
+        wc.showWindow(nil)
+        wc.window?.makeKeyAndOrderFront(nil)
+        return false
+    }
+
     /// No untitled document at launch, ever.
     ///
     /// This is load-bearing and the reason is not obvious. Crook is a single
@@ -104,7 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New", action: #selector(NSDocumentController.newDocument(_:)), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "Open…", action: #selector(NSDocumentController.openDocument(_:)), keyEquivalent: "o")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        // Close closes the DOCUMENT. Crook has one window and documents come
+        // and go beneath it, so NSWindow.performClose — the usual target — shut
+        // the only window, left the app running with nothing on screen, and
+        // looked exactly like a crash. The red button still closes the window;
+        // the Dock icon brings it back (applicationShouldHandleReopen).
+        fileMenu.addItem(withTitle: "Close", action: #selector(WorkspaceWindowController.closeDocument(_:)),
+                         keyEquivalent: "w")
         fileMenu.addItem(withTitle: "Save", action: #selector(NSDocument.save(_:)), keyEquivalent: "s")
         let reload = NSMenuItem(title: "Reload from Disk",
                                 action: #selector(CrookDocument.reloadFromDiskDiscardingEdits(_:)),
