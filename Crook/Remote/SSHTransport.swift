@@ -365,6 +365,15 @@ final class SSHTransport {
         handleClose()
     }
 
+    /// One command on the far Mac, over the shared connection.
+    ///
+    /// Never prompts: if the connection has gone, this fails rather than ask
+    /// ssh for a password nobody can see. Blocks; call it off the main thread.
+    func runCommand(_ command: String, timeout: TimeInterval) -> (status: Int32, out: String, err: String) {
+        let r = run([host, command], secret: nil, timeout: timeout)
+        return (r.status, String(data: r.out, encoding: .utf8) ?? "", r.err)
+    }
+
     // MARK: - request / reply
 
     @discardableResult
