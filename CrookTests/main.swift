@@ -18,5 +18,8 @@ if want("doclife") { DocumentLifetimeTests.run() }
 if want("regress")  { RegressionTests.run() }
 
 if want("claude-plan") { ClaudePlanTests.run() }
+if want("claude-runner") { ClaudeRunnerTests.run() }
+if want("claude-exit") { ClaudeRunnerTests.outcomes() }
+if want("claude-placement") { ClaudeRunnerTests.placement() }
 
 exit(T.summary())

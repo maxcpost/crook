@@ -77,10 +77,15 @@ final class SSHTransport {
     /// authentication. If Herdr is holding a session open to the same machine
     /// through /usr/bin/ssh, Crook joins it and connects with no auth at all;
     /// if not, Crook's own master persists and only the first connect pays.
-    private var commonOptions: [String] {
+    ///
+    /// Static, because Edit with Claude runs ssh too — inside a Terminal
+    /// window — and it has to join this same connection. A copy of these
+    /// options that drifted would stop sharing it and silently cost the person
+    /// a second password.
+    static var connectionOptions: [String] {
         [
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(Self.controlPath)",
+            "-o", "ControlPath=\(controlPath)",
             "-o", "ControlPersist=10m",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
@@ -88,6 +93,8 @@ final class SSHTransport {
             "-o", "StrictHostKeyChecking=accept-new",
         ]
     }
+
+    private var commonOptions: [String] { Self.connectionOptions }
 
     /// Caches, not Application Support, and the reason is not tidiness.
     ///
