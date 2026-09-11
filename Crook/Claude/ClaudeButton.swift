@@ -95,7 +95,14 @@ final class ClaudeButton: NSTitlebarAccessoryViewController {
 
         let showTitle = !compact || mode == .opening
         button.title = showTitle ? title : ""
-        button.image = image
+        // Alone, the running dot is a seven-point speck: without a label it is
+        // the sparkles, in the yellow that means Claude.
+        let compactRunning = !showTitle && mode == .running
+        button.image = compactRunning
+            ? NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+                    .applying(.init(paletteColors: [SessionBanner.changedYellow])))
+            : image
         button.imagePosition = showTitle ? (image == nil ? .noImage : .imageLeading) : .imageOnly
         button.toolTip = showTitle ? help : "\(title) — \(help)"
         button.setAccessibilityLabel(title)

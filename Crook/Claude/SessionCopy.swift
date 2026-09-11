@@ -37,10 +37,14 @@ enum SessionCopy {
     // MARK: - popover
 
     static let placeholder = "Describe the change, or leave this empty to talk it through"
+    static let requestLabel = "Request for Claude"
     static let openButton = "Open Claude Code"
     static let tip = "Tip: select part of the file first to point Claude at it."
     /// Named, because the trust question's default answer is No (check S4).
     static let firstTime = "The first time, Claude Code may ask you to log in. In a folder it hasn't seen before, it asks whether you trust it: choose “Yes, I trust this folder”."
+
+    /// For a file inside a .claude folder, where Claude Code always asks first.
+    static let asksFirst = "Claude Code asks in Terminal before it changes a file in a .claude folder. Choose Yes there, and your changes appear here."
 
     static func selectionNote(_ r: ClosedRange<Int>) -> String {
         r.lowerBound == r.upperBound ? "Line \(r.lowerBound) selected" : "Lines \(r.lowerBound)–\(r.upperBound) selected"
@@ -71,6 +75,9 @@ enum SessionCopy {
         var undo: Availability?
         var redo: Availability?
         var alsoChanged: [String]
+        /// The file is inside a .claude folder, so Claude Code asks before
+        /// changing it.
+        var asksBeforeEditing = false
     }
 
     /// U+2212 MINUS SIGN, as the rail uses, so the figures line up.
@@ -98,6 +105,7 @@ enum SessionCopy {
             let note: String
             if f.nudging { note = "To edit it yourself, finish in Terminal or click End Session" }
             else if changed { note = "\(tally(f.added, f.removed)) so far · read-only until you finish" }
+            else if f.asksBeforeEditing { note = "Claude Code asks in Terminal before changing it" }
             else { note = "Read-only here until you finish" }
             return BannerContent(tone: f.nudging ? .attention : .live, title: "Editing with Claude in Terminal",
                                  note: note, buttons: [showTerminal, endSession], alsoChanged: [])
@@ -162,6 +170,7 @@ enum SessionCopy {
     // MARK: - VoiceOver
 
     static let startedAnnouncement = "Claude Code is open in Terminal."
+    static let nudgeAnnouncement = "Read-only while Claude edits this file. To edit it yourself, finish in Terminal or click End Session."
 
     /// A range only when the lines are neighbours. "Lines 3 to 80" for a
     /// two-line rename sounds like everything in between changed.
@@ -175,7 +184,7 @@ enum SessionCopy {
     static func endedAnnouncement(added: Int, removed: Int) -> String {
         added + removed == 0
             ? "Claude's session has ended. This file wasn't changed."
-            : "Claude's session has ended. \(added) lines added, \(removed) removed."
+            : "Claude's session has ended. \(added) \(added == 1 ? "line" : "lines") added, \(removed) removed."
     }
 
     // MARK: - alerts
@@ -229,7 +238,14 @@ enum SessionCopy {
 
     static let didNotStart = Alert(title: "Claude Code didn't start.",
                                    message: "If a Terminal window opened, it shows what went wrong.",
-                                   buttons: ["OK"])
+                                   buttons: ["Try Again", "OK"])
+
+    /// Undo or Redo found the disk no longer holding the version it replaces.
+    static func swapRefused(fileName: String, restoring: Bool) -> Alert {
+        Alert(title: "\(fileName) has changed since the session ended.",
+              message: "\(restoring ? "Undo" : "Redo") would overwrite those changes, so Crook left the file as it is.",
+              buttons: ["OK"])
+    }
 
     static let closedWithoutChanges = Alert(
         title: "Claude Code closed without making changes.",

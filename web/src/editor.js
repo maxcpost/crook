@@ -466,7 +466,7 @@ const readOnlyGuard = EditorView.domEventHandlers({
       if (k === "v" || k === "x" || k === "z" || k === "y") reportAttempt()
       return false
     }
-    if ((e.key && e.key.length === 1) || e.key === "Backspace" || e.key === "Delete" || e.key === "Enter" || e.key === "Tab") {
+    if ((e.key && e.key.length === 1) || e.key === "Backspace" || e.key === "Delete" || e.key === "Enter") {
       reportAttempt()
     }
     return false

@@ -243,6 +243,7 @@ final class EditorViewController: NSViewController, WKUIDelegate {
             banner.isHidden = true
             webTopToBanner.isActive = false
             webTopToView.isActive = true
+            view.window?.recalculateKeyViewLoop()
             return
         }
         banner.onAction = onAction
@@ -252,6 +253,8 @@ final class EditorViewController: NSViewController, WKUIDelegate {
         banner.isHidden = false
         webTopToView.isActive = false
         webTopToBanner.isActive = true
+        // So Tab reaches the banner's buttons.
+        view.window?.recalculateKeyViewLoop()
     }
 
     func pulseBanner() { banner.pulse() }

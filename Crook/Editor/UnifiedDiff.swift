@@ -22,7 +22,11 @@ enum UnifiedDiff {
         var isEmpty: Bool { added == 0 && removed == 0 }
     }
 
-    static func between(_ old: String, _ new: String, context: Int = 3) -> ([Line], Summary) {
+    /// `lcsCellLimit` is how large a middle the full comparison takes on;
+    /// past it, the edit-distance path below. Tests lower it to check the two
+    /// agree.
+    static func between(_ old: String, _ new: String, context: Int = 3,
+                        lcsCellLimit: Int = 400_000) -> ([Line], Summary) {
         let a = old.components(separatedBy: "\n")
         let b = new.components(separatedBy: "\n")
 
@@ -40,15 +44,30 @@ enum UnifiedDiff {
         var ops: [Line] = []
         var added = 0, removed = 0
 
-        // Guard against a pathological middle: a whole-file rewrite of a large
-        // document would be O(n*m). Past the cap, report it as a block replace
-        // rather than spending seconds to say the same thing.
-        if midA.count * midB.count > 400_000 {
-            for (i, l) in midA.enumerated() {
-                ops.append(Line(kind: .removed, text: l, oldNo: head + i + 1, newNo: nil)); removed += 1
-            }
-            for (i, l) in midB.enumerated() {
-                ops.append(Line(kind: .added, text: l, oldNo: nil, newNo: head + i + 1)); added += 1
+        // A middle too large for the full comparison, which is O(n*m): a long
+        // file with a few scattered changes, or a whole-file rewrite. The
+        // edit-distance path costs time in proportion to how much changed, so
+        // the first stays precise; the second, past its limit, is reported as
+        // the block replace it effectively is.
+        if midA.count * midB.count > lcsCellLimit {
+            if let script = editScript(midA, midB, maxChanges: 1000) {
+                for step in script {
+                    switch step {
+                    case .same(let i, let j):
+                        ops.append(Line(kind: .context, text: midA[i], oldNo: head + i + 1, newNo: head + j + 1))
+                    case .removed(let i):
+                        ops.append(Line(kind: .removed, text: midA[i], oldNo: head + i + 1, newNo: nil)); removed += 1
+                    case .added(let j):
+                        ops.append(Line(kind: .added, text: midB[j], oldNo: nil, newNo: head + j + 1)); added += 1
+                    }
+                }
+            } else {
+                for (i, l) in midA.enumerated() {
+                    ops.append(Line(kind: .removed, text: l, oldNo: head + i + 1, newNo: nil)); removed += 1
+                }
+                for (i, l) in midB.enumerated() {
+                    ops.append(Line(kind: .added, text: l, oldNo: nil, newNo: head + i + 1)); added += 1
+                }
             }
         } else {
             // LCS over the middle only.
@@ -96,5 +115,64 @@ enum UnifiedDiff {
         if tailEnd < b.count { out.append(Line(kind: .gap, text: "", oldNo: nil, newNo: nil)) }
 
         return (out, Summary(added: added, removed: removed))
+    }
+
+    enum Step: Equatable {
+        case same(Int, Int)
+        case removed(Int)
+        case added(Int)
+    }
+
+    /// The shortest edit script from `a` to `b` (Myers, 1986), or nil when it
+    /// needs more than `maxChanges` added and removed lines.
+    ///
+    /// Only the diagonals each round can reach are kept, so memory grows with
+    /// the square of the changes, not the size of the file.
+    static func editScript(_ a: [String], _ b: [String], maxChanges: Int) -> [Step]? {
+        // Compare numbers, not strings, in the inner loop.
+        var ids: [String: Int32] = [:]
+        let x0 = a.map { line -> Int32 in
+            if let id = ids[line] { return id }
+            let id = Int32(ids.count); ids[line] = id; return id
+        }
+        let y0 = b.map { line -> Int32 in
+            if let id = ids[line] { return id }
+            let id = Int32(ids.count); ids[line] = id; return id
+        }
+        let n = x0.count, m = y0.count
+        let limit = min(maxChanges, n + m)
+        let offset = limit + 1
+        var v = [Int](repeating: 0, count: 2 * limit + 3)
+        var trace: [[Int32]] = []
+        var found: Int?
+
+        search: for d in 0...limit {
+            // The furthest point on each diagonal before this round.
+            trace.append(v[(offset - d)...(offset + d)].map { Int32($0) })
+            for k in stride(from: -d, through: d, by: 2) {
+                var x = (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1]))
+                    ? v[offset + k + 1] : v[offset + k - 1] + 1
+                var y = x - k
+                while x < n, y < m, x0[x] == y0[y] { x += 1; y += 1 }
+                v[offset + k] = x
+                if x >= n && y >= m { found = d; break search }
+            }
+        }
+        guard let changes = found else { return nil }
+
+        var steps: [Step] = []
+        var x = n, y = m
+        for d in stride(from: changes, through: 1, by: -1) {
+            let before = trace[d]
+            func at(_ k: Int) -> Int { Int(before[k + d]) }
+            let k = x - y
+            let prevK = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? k + 1 : k - 1
+            let prevX = at(prevK)
+            let prevY = prevX - prevK
+            while x > prevX && y > prevY { x -= 1; y -= 1; steps.append(.same(x, y)) }
+            if x == prevX { y -= 1; steps.append(.added(y)) } else { x -= 1; steps.append(.removed(x)) }
+        }
+        while x > 0 && y > 0 { x -= 1; y -= 1; steps.append(.same(x, y)) }
+        return steps.reversed()
     }
 }

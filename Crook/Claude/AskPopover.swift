@@ -15,6 +15,8 @@ final class AskPopover: NSViewController, NSTextViewDelegate {
         var showTip: Bool
         var showFirstTime: Bool
         var draft: String
+        /// Inside a .claude folder, where Claude Code asks before each change.
+        var asksBeforeEditing = false
     }
 
     var onOpen: ((String) -> Void)?
@@ -53,8 +55,13 @@ final class AskPopover: NSViewController, NSTextViewDelegate {
         rows.append(makeField(width: inner))
         rows.append(Self.label(SessionCopy.footer(machine: context.machineName), size: 11,
                                color: .secondaryLabelColor, width: inner))
+        if context.asksBeforeEditing {
+            rows.append(Self.label(SessionCopy.asksFirst, size: 11, color: .secondaryLabelColor, width: inner))
+        }
         if context.showFirstTime {
-            rows.append(Self.label(SessionCopy.firstTime, size: 11, color: .tertiaryLabelColor, width: inner))
+            // The one line that heads off a declined trust question: readable,
+            // not faint.
+            rows.append(Self.label(SessionCopy.firstTime, size: 11, color: .secondaryLabelColor, width: inner))
         }
 
         let open = NSButton(title: SessionCopy.openButton, target: self, action: #selector(openTapped))
@@ -107,7 +114,8 @@ final class AskPopover: NSViewController, NSTextViewDelegate {
         textView.frame = NSRect(x: 0, y: 0, width: width - 2, height: 60)
         textView.string = context.draft
         textView.delegate = self
-        textView.setAccessibilityLabel(SessionCopy.placeholder)
+        textView.setAccessibilityLabel(SessionCopy.requestLabel)
+        textView.setAccessibilityPlaceholderValue(SessionCopy.placeholder)
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -121,6 +129,8 @@ final class AskPopover: NSViewController, NSTextViewDelegate {
         placeholder.textColor = .placeholderTextColor
         placeholder.preferredMaxLayoutWidth = width - 20
         placeholder.isHidden = !context.draft.isEmpty
+        // The field already says this to VoiceOver.
+        placeholder.setAccessibilityElement(false)
 
         let box = FieldBox()
         for v in [box, scroll, placeholder] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false }
@@ -170,9 +180,10 @@ final class AskPopover: NSViewController, NSTextViewDelegate {
     private func updateHeight() {
         guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
         lm.ensureLayout(for: tc)
-        let used = lm.usedRect(for: tc).height + textView.textContainerInset.height * 2
-        let lines = max(3, min(8, Int((used / Self.lineHeight).rounded(.up))))
-        fieldHeight.constant = CGFloat(lines) * Self.lineHeight + 12
+        let lineHeight = lm.defaultLineHeight(for: textView.font ?? .systemFont(ofSize: 13))
+        let used = lm.usedRect(for: tc).height
+        let lines = max(3, min(8, Int((used / lineHeight - 0.01).rounded(.up))))
+        fieldHeight.constant = CGFloat(lines) * lineHeight + textView.textContainerInset.height * 2 + 2
         view.layoutSubtreeIfNeeded()
         preferredContentSize = view.fittingSize
     }

@@ -414,6 +414,13 @@ final class RailCell: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    private static let liveMark = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Editing with Claude")?
+        .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            .applying(.init(paletteColors: [SessionBanner.changedYellow])))
+    private static let reviewMark = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Claude finished editing")?
+        .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            .applying(.init(paletteColors: [.secondaryLabelColor])))
+
     func configure(_ node: Workspace.Node) {
         label.stringValue = node.name
         switch node.kind {
@@ -451,11 +458,16 @@ final class RailCell: NSTableCellView {
             count.textColor = .tertiaryLabelColor
             count.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         }
-        // A file Claude is editing right now, findable from anywhere in the tree.
-        let editing = node.kind == .file && node.url.map {
-            SessionRegistry.shared.liveSession(for: $0.path, providerID: Providers.current.id) != nil
-        } == true
-        sessionMark.isHidden = !editing
-        if editing { count.stringValue = "" }
+        // A file Claude is editing right now, or has finished editing and is
+        // waiting for review, findable from anywhere in the tree.
+        let session = node.kind == .file ? node.url.flatMap {
+            SessionRegistry.shared.session(for: $0.path, providerID: Providers.current.id)
+        } : nil
+        sessionMark.isHidden = session == nil
+        if let session {
+            count.stringValue = ""
+            sessionMark.image = session.isLive ? Self.liveMark : Self.reviewMark
+            sessionMark.setAccessibilityLabel(session.isLive ? "Editing with Claude" : "Claude finished editing")
+        }
     }
 }

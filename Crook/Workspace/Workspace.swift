@@ -457,9 +457,13 @@ final class Workspace {
             // dropped every project whose name contains one.
             let slug = e.lastPathComponent
             guard slug.hasPrefix("-") else { return nil }
-            let path = Self.decodeSlug(slug) ?? slug.replacingOccurrences(of: "-", with: "/")
             // A session on a personal file runs in ~/.claude, and Claude Code
-            // then lists that folder as a project. It is not one.
+            // then lists that folder as a project. It is not one. Compared as
+            // a slug: "/.claude" becomes "--claude", which no decoding turns
+            // back into the path.
+            let claudeSlug = claudeHome.path.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
+            guard slug != claudeSlug else { return nil }
+            let path = Self.decodeSlug(slug) ?? slug.replacingOccurrences(of: "-", with: "/")
             guard path != claudeHome.path else { return nil }
             guard p.isDirectory(path) else { return nil }
             guard !imported.contains(path) else { return nil }

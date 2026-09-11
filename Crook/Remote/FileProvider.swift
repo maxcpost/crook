@@ -166,16 +166,31 @@ final class LocalProvider: FileProvider {
     func write(_ data: Data, to path: String) throws {
         let fm = FileManager.default
         let target = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        guard fm.fileExists(atPath: target.path) else {
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: target.path, isDirectory: &isDirectory) else {
             try data.write(to: target, options: .atomic)
             return
         }
+        // A folder is never replaced by a file, whatever link led here.
+        guard !isDirectory.boolValue else { throw CocoaError(.fileWriteInvalidFileName) }
+        let before = try? fm.attributesOfItem(atPath: target.path)
         let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                  appropriateFor: target, create: true)
         defer { try? fm.removeItem(at: staging) }
         let staged = staging.appendingPathComponent(target.lastPathComponent)
         try data.write(to: staged)
         _ = try fm.replaceItemAt(target, withItemAt: staged)
+        // The swap keeps extended attributes, but gives the file the staging
+        // folder's group and the permissions that group allows. A file shared
+        // through a group (anything in /Users/Shared) keeps both.
+        // One at a time: a group this user isn't in fails alone, and the
+        // permissions are still put back.
+        if let group = before?[.groupOwnerAccountID] {
+            try? fm.setAttributes([.groupOwnerAccountID: group], ofItemAtPath: target.path)
+        }
+        if let mode = before?[.posixPermissions] {
+            try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: target.path)
+        }
     }
 
     func symlinkDestination(_ path: String) -> String? {

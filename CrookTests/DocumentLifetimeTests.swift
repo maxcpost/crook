@@ -99,6 +99,8 @@ enum DocumentLifetimeTests {
         T.ok("L-10  closing releases it, so navigation does not leak documents",
              !NSDocumentController.shared.documents.contains { $0 === escaped })
 
+        linkedAutosave()
+
         closing()
         identity()
     }
@@ -194,5 +196,65 @@ enum DocumentLifetimeTests {
         defer { controller.removeDocument(here); here.close() }
         T.ok("L-19  it gets the local one, even though the remote was registered first",
              controller.document(for: url) === here)
+    }
+}
+
+extension DocumentLifetimeTests {
+    /// CLAUDE.md is often a link to AGENTS.md. Typing in it must save like any
+    /// other file: into AGENTS.md, with the link left a link.
+    static func linkedAutosave() {
+        T.suite("documents — a linked CLAUDE.md")
+        let fm = FileManager.default
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("crook-linked-doc-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let agents = dir.appendingPathComponent("AGENTS.md")
+        let link = dir.appendingPathComponent("CLAUDE.md")
+        try? Data("# Agents\n".utf8).write(to: agents)
+        try? fm.createSymbolicLink(atPath: link.path, withDestinationPath: "AGENTS.md")
+
+        guard let doc = try? CrookDocument(contentsOf: link, ofType: "net.daringfireball.markdown") else {
+            T.ok("L-20  a linked file opens", false); return
+        }
+        NSDocumentController.shared.addDocument(doc)
+        defer { doc.close() }
+        // An edit, as the editor would leave it.
+        try? doc.read(from: Data("# Agents\n\nTyped in Crook.\n".utf8), ofType: "net.daringfireball.markdown")
+        doc.updateChangeCount(.changeDone)
+
+        var error: Error?
+        var finished = false
+        doc.autosave(withImplicitCancellability: false) { err in
+            error = err
+            finished = true
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !finished && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        T.ok("L-20  autosaving a linked file succeeds", finished && error == nil, String(describing: error))
+        T.ok("L-21  and the words land in the file the link names",
+             fm.contents(atPath: agents.path) == Data("# Agents\n\nTyped in Crook.\n".utf8))
+        T.eq("L-22  and the link is still a link", try? fm.destinationOfSymbolicLink(atPath: link.path), "AGENTS.md")
+
+        // Again, a moment later: NSDocument checks its record of the file's
+        // date before each save, and a wrong one fails the second, not the first.
+        usleep(1_100_000)
+        try? doc.read(from: Data("# Agents\n\nTyped twice.\n".utf8), ofType: "net.daringfireball.markdown")
+        doc.updateChangeCount(.changeDone)
+        var secondError: Error?
+        var secondDone = false
+        doc.autosave(withImplicitCancellability: false) { err in
+            secondError = err
+            secondDone = true
+        }
+        let again = Date().addingTimeInterval(5)
+        while !secondDone && Date() < again {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        T.ok("L-23  and so does the next one",
+             secondDone && secondError == nil && fm.contents(atPath: agents.path) == Data("# Agents\n\nTyped twice.\n".utf8),
+             String(describing: secondError))
     }
 }

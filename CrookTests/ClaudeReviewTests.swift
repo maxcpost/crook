@@ -25,15 +25,22 @@ enum ClaudeReviewTests {
         T.eq("CV-04  removing the last line lights the new last line",
              SessionReview.changedLines(before: "a\nb\nc", after: "a\nb"), [2])
         T.eq("CV-05  no change lights nothing", SessionReview.changedLines(before: before, after: before), [])
+        var sevenHundred = (1...700).map { "line \($0)" }
+        let longBefore = sevenHundred.joined(separator: "\n") + "\n"
+        sevenHundred[2] = "LINE 3"
+        sevenHundred[697] = "LINE 698"
+        T.eq("CV-36  and in a 700-line file, still two lines, not the 696 between",
+             SessionReview.changedLines(before: longBefore, after: sevenHundred.joined(separator: "\n") + "\n"), [3, 698])
         let t = SessionReview.tally(baseline: before, current: after)
         T.ok("CV-06  the tally counts lines added and removed", t.added == 2 && t.removed == 2, "\(t)")
 
         T.suite("claude-review — the banner says")
         func facts(_ state: ClaudeSession.State, added: Int = 0, removed: Int = 0, vanished: Bool = false,
                    nudging: Bool = false, undo: SessionCopy.Availability? = .available,
-                   redo: SessionCopy.Availability? = .available, also: [String] = []) -> SessionCopy.BannerFacts {
+                   redo: SessionCopy.Availability? = .available, also: [String] = [],
+                   asks: Bool = false) -> SessionCopy.BannerFacts {
             .init(state: state, added: added, removed: removed, fileVanished: vanished, machineName: "mac-mini",
-                  nudging: nudging, undo: undo, redo: redo, alsoChanged: also)
+                  nudging: nudging, undo: undo, redo: redo, alsoChanged: also, asksBeforeEditing: asks)
         }
         func titles(_ c: BannerContent?) -> [String] { c?.buttons.map(\.title) ?? [] }
 
@@ -48,6 +55,11 @@ enum ClaudeReviewTests {
              "To edit it yourself, finish in Terminal or click End Session")
         T.eq("CV-11  Claude moved the file", SessionCopy.banner(facts(.running, vanished: true))?.title,
              "Claude moved or deleted this file")
+        T.eq("CV-34  a file Claude Code asks about says where the question is, until the first change lands",
+             SessionCopy.banner(facts(.running, asks: true))?.note, "Claude Code asks in Terminal before changing it")
+        T.eq("CV-35  then counts changes like any other",
+             SessionCopy.banner(facts(.running, added: 2, removed: 1, asks: true))?.note,
+             "+2 −1 so far · read-only until you finish")
         let done = SessionCopy.banner(facts(.ended(.finished), added: 14, removed: 6,
                                             also: ["CLAUDE.md", "commands/ship.md"]))
         T.ok("CV-12  finished with changes",
@@ -95,6 +107,12 @@ enum ClaudeReviewTests {
              "macOS hasn't given Terminal access to your Desktop folder. Turn it on in System Settings, then try again.")
         T.ok("CV-23  a finished session is not an alert",
              SessionCopy.alert(for: .finished, machine: nil, protectedFolder: nil) == nil)
+        T.eq("CV-37  Claude Code not starting offers to try again", SessionCopy.didNotStart.buttons, ["Try Again", "OK"])
+        T.eq("CV-38  Undo that finds the file changed says nothing was overwritten",
+             SessionCopy.swapRefused(fileName: "SKILL.md", restoring: true).message,
+             "Undo would overwrite those changes, so Crook left the file as it is.")
+        T.eq("CV-39  one line is one line", SessionCopy.endedAnnouncement(added: 1, removed: 0),
+             "Claude's session has ended. 1 line added, 0 removed.")
         T.eq("CV-24  too old says which version is needed and which is there",
              SessionCopy.tooOld(machine: nil, installed: "2.0.1").message,
              "Edit with Claude needs version \(ClaudePreflight.minimumVersion) or later. This Mac has 2.0.1.")
@@ -137,6 +155,40 @@ enum ClaudeReviewTests {
              && fm.contents(atPath: agents) == baseline)
         var tag = [UInt8](repeating: 0, count: 8)
         let tagLength = agents.withCString { p in getxattr(p, "com.newvisiondevgrp.crook-test", &tag, tag.count, 0, 0) }
+        // A file shared through a group, as in /Users/Shared: the swap used to
+        // hand it the staging folder's group and drop the group's access.
+        let shared = dir.appendingPathComponent("shared.md").path
+        try? claudes.write(to: URL(fileURLWithPath: shared))
+        let otherGroup = getgroups(0, nil) > 0 ? { () -> gid_t? in
+            var groups = [gid_t](repeating: 0, count: Int(getgroups(0, nil)))
+            let n = getgroups(Int32(groups.count), &groups)
+            return groups.prefix(Int(max(0, n))).first { $0 != getegid() }
+        }() : nil
+        if let g = otherGroup, chown(shared, getuid(), g) == 0 {
+            try? fm.setAttributes([.posixPermissions: 0o664], ofItemAtPath: shared)
+            let wrote = (try? SessionReview.replace(path: shared, on: local, expecting: claudes, with: baseline)) ?? false
+            let attrs = try? fm.attributesOfItem(atPath: shared)
+            T.ok("CV-40  and a file shared through a group keeps that group and the group's access",
+                 wrote && (attrs?[.groupOwnerAccountID] as? UInt32) == g && (attrs?[.posixPermissions] as? Int) == 0o664,
+                 "\(String(describing: attrs?[.groupOwnerAccountID])) \(String(describing: attrs?[.posixPermissions]))")
+        } else {
+            T.skip("CV-40  a file shared through a group keeps its group", "this user belongs to no second group")
+        }
+        let asFolder = dir.appendingPathComponent("folder-link.md").path
+        try? fm.createDirectory(atPath: dir.appendingPathComponent("real-folder/inner").path, withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: asFolder, withDestinationPath: "real-folder")
+        let folderRefused = (try? local.write(Data("x".utf8), to: asFolder)) == nil
+        T.ok("CV-41  and a link that names a folder is never replaced by a file",
+             folderRefused && fm.fileExists(atPath: dir.appendingPathComponent("real-folder/inner").path))
+        // NSDocument keeps the link's own date and compares that before it
+        // saves. The target's date in its place made each save of a linked
+        // CLAUDE.md ask about a change by "another application".
+        let oldDate = Date(timeIntervalSince1970: 1_600_000_000)
+        var times = [timeval(tv_sec: Int(oldDate.timeIntervalSince1970), tv_usec: 0),
+                     timeval(tv_sec: Int(oldDate.timeIntervalSince1970), tv_usec: 0)]
+        _ = link.withCString { lutimes($0, &times) }
+        T.eq("CV-42  a linked document's date is the link's own, as NSDocument keeps it",
+             CrookDocument.diskModificationDate(URL(fileURLWithPath: link)), oldDate)
         T.ok("CV-29  and keeps the file's permissions and extended attributes",
              ((try? fm.attributesOfItem(atPath: agents))?[.posixPermissions] as? Int) == 0o640
              && tagLength == 4 && String(decoding: tag.prefix(4), as: UTF8.self) == "kept")

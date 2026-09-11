@@ -14,6 +14,10 @@ class CrookDocument: NSDocument {
     private var loadedProfile = ByteProfile(lineEnding: .lf, hasFinalNewline: true,
                                             bom: nil, encoding: .utf8, mixedLineEndings: false)
     private weak var editor: EditorViewController?
+    /// A remote document's bytes as last read from or written to its machine,
+    /// to tell whether that file changed underneath unsaved edits. A local
+    /// document has NSDocument's fileModificationDate for the same question.
+    private var lastKnownDisk: Data?
 
     override class var autosavesInPlace: Bool { true }
 
@@ -59,6 +63,7 @@ class CrookDocument: NSDocument {
         try read(from: data, ofType: "net.daringfireball.markdown")
         fileURL = url
         remoteProviderID = providerID
+        lastKnownDisk = data
     }
 
     /// ⌘S. For a local document this is AppKit's job; for a remote one the
@@ -87,6 +92,7 @@ class CrookDocument: NSDocument {
         do {
             let bytes = try data(ofType: "net.daringfireball.markdown")
             try p.write(bytes, to: url.path)
+            lastKnownDisk = bytes
             updateChangeCount(.changeCleared)
             SeenStore.shared.markSeen(url)
             return .saved
@@ -119,7 +125,7 @@ class CrookDocument: NSDocument {
             let bytes = try data(ofType: fileType ?? "net.daringfireball.markdown")
             try Providers.local.write(bytes, to: url.path)
             // NSDocument compares this against the disk before its next save.
-            fileModificationDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            fileModificationDate = Self.diskModificationDate(url)
             updateChangeCount(.changeCleared)
             SeenStore.shared.markSeen(url)
             return true
@@ -127,6 +133,32 @@ class CrookDocument: NSDocument {
             presentError(error)
             return false
         }
+    }
+
+    /// Unsaved edits over a file that has changed on its disk since this
+    /// document last read or wrote it. The window's own conflict state only
+    /// knows about changes it watched happen; a document held while another
+    /// file was open, or a remote one, can go stale unseen.
+    func diskChangedUnderEdits() -> Bool {
+        guard isDocumentEdited, let url = fileURL else { return false }
+        if let providerID = remoteProviderID {
+            let p = Providers.current
+            guard p.id == providerID, p.isConnected, let known = lastKnownDisk,
+                  let now = p.contents(url.path) else { return false }
+            return now != known
+        }
+        guard let known = fileModificationDate, let now = Self.diskModificationDate(url) else { return false }
+        return now.timeIntervalSince(known) > 0.001
+    }
+
+    /// The modification date NSDocument keeps for its file: the path's own,
+    /// not following a symlink. Its safe-save check compares exactly this, and
+    /// the target's date in its place made every save of a linked CLAUDE.md
+    /// ask about a change "by another application". For the same reason a
+    /// change to a link's target is not seen as a conflict here; the watcher,
+    /// which follows the link, still reloads it while the file is open.
+    static func diskModificationDate(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     private func present(_ outcome: RemoteSave) {
@@ -295,6 +327,16 @@ class CrookDocument: NSDocument {
                     "Save writes it back over the connection. Crook does not copy it onto this Mac.",
             ])
         }
+        // CLAUDE.md is often a link to AGENTS.md. NSDocument's safe save swaps
+        // a new file in at the path it is given, which it cannot do through a
+        // link: every save and autosave of one failed with "The file doesn't
+        // exist", and the typing went nowhere. The file the link names is
+        // written instead, the way the session's save and Undo write it.
+        if saveOperation == .saveOperation || saveOperation == .autosaveInPlaceOperation,
+           (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            try Providers.local.write(try data(ofType: typeName), to: url.path)
+            return
+        }
         try super.writeSafely(to: url, ofType: typeName, for: saveOperation)
     }
 
@@ -428,8 +470,35 @@ class CrookDocument: NSDocument {
         loadedText = text
         loadedProfile = profile
         editor?.bridge.load(text: text, profile: profile)
+        if remoteProviderID != nil {
+            lastKnownDisk = data
+        } else {
+            // What NSDocument checks before it saves or autosaves. Left at the
+            // date of the version first opened, the next save after any
+            // reload — every change Claude makes is one — asked whether to
+            // overwrite a file "changed by another application".
+            fileModificationDate = Self.diskModificationDate(url)
+        }
         updateChangeCount(.changeCleared)
         SeenStore.shared.markSeen(url)
+    }
+
+    /// The disk was written with the bytes this document already holds (a
+    /// touch, or a tool rewriting what was there). Nothing to reload, but
+    /// NSDocument's idea of the file's date must follow, or its next save asks
+    /// about a change that changed nothing.
+    func noteDiskUnchanged() {
+        guard remoteProviderID == nil, let url = fileURL, !isDocumentEdited else { return }
+        fileModificationDate = Self.diskModificationDate(url)
+    }
+
+    /// Nothing to save while Claude has the file: the buffer is what was last
+    /// read from disk, and writing it could only put back an older version.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(save(_:)), WorkspaceWindowController.shared.sessions.isEditing(self) {
+            return false
+        }
+        return super.validateUserInterfaceItem(item)
     }
 
     override func makeWindowControllers() {

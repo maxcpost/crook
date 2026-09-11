@@ -25,6 +25,9 @@ final class FileWatcher {
     private var url: URL?
     private var rearm: DispatchWorkItem?
     private var settle: DispatchWorkItem?
+    /// The file was reported gone. Finding it again is then a change too:
+    /// deleted and written anew, it would otherwise be watched in silence.
+    private var reportedVanished = false
     /// A write is not one event. Measured: a twelve-line streamed write fired
     /// twelve vnode events, and without a settle window each one reloads the
     /// buffer — so the reader watches the file grow line by line, seeing
@@ -39,7 +42,9 @@ final class FileWatcher {
     deinit { stop() }
 
     func watch(_ url: URL?) {
+        let stillGone = reportedVanished && url == self.url
         stop()
+        reportedVanished = stillGone
         guard let url else { return }
         self.url = url
         arm()
@@ -80,6 +85,10 @@ final class FileWatcher {
         s.setCancelHandler { [f] in close(f) }
         source = s
         s.resume()
+        if reportedVanished {
+            reportedVanished = false
+            coalesce()
+        }
     }
 
     /// Report once, after the writes stop.
@@ -98,6 +107,7 @@ final class FileWatcher {
             if FileManager.default.fileExists(atPath: url.path) {
                 self.arm()
             } else if reportVanishedAfter {
+                self.reportedVanished = true
                 self.onChange(.vanished)
             } else {
                 // One more grace period before calling it gone.

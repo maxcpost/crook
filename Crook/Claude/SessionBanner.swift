@@ -30,8 +30,8 @@ final class SessionBanner: NSView {
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.setContentCompressionResistancePriority(.defaultLow + 10, for: .horizontal)
-        noteLabel.font = .systemFont(ofSize: 12)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        noteLabel.font = .systemFont(ofSize: 11.5)
         noteLabel.textColor = .secondaryLabelColor
         noteLabel.lineBreakMode = .byTruncatingTail
         noteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -41,12 +41,24 @@ final class SessionBanner: NSView {
         buttonRow.setContentCompressionResistancePriority(.required, for: .horizontal)
         alsoRow.orientation = .horizontal
         alsoRow.spacing = 3
+        // Names give way to the window, never the other way round.
+        alsoRow.setClippingResistancePriority(.defaultLow, for: .horizontal)
         separator.boxType = .separator
+
+        // The note under the title rather than beside it. Crook narrows itself
+        // to make room for Terminal, and a single row there left the note —
+        // the count, the "click End Session" — only a sliver.
+        let text = NSStackView(views: [titleLabel, noteLabel])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 1
+        text.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let top = NSStackView(views: [dot, titleLabel, noteLabel, spacer, buttonRow])
+        let top = NSStackView(views: [dot, text, spacer, buttonRow])
         top.orientation = .horizontal
         top.alignment = .centerY
         top.spacing = 8
@@ -67,6 +79,7 @@ final class SessionBanner: NSView {
             rows.trailingAnchor.constraint(equalTo: trailingAnchor),
             rows.bottomAnchor.constraint(equalTo: separator.topAnchor),
             top.widthAnchor.constraint(equalTo: rows.widthAnchor, constant: -24),
+            alsoRow.widthAnchor.constraint(lessThanOrEqualTo: rows.widthAnchor, constant: -24),
             separator.leadingAnchor.constraint(equalTo: leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -109,6 +122,9 @@ final class SessionBanner: NSView {
                 button.tag = Self.actions.firstIndex(of: b.action) ?? 0
                 buttonRow.addArrangedSubview(button)
             }
+            // New buttons, so Tab reaches Review, Undo and Done, not the
+            // buttons they replaced.
+            window?.recalculateKeyViewLoop()
         }
 
         if previous?.alsoChanged != c.alsoChanged { showAlsoChanged(c.alsoChanged) }
@@ -126,6 +142,9 @@ final class SessionBanner: NSView {
                 link.isBordered = false
                 link.font = .systemFont(ofSize: 11.5)
                 link.contentTintColor = .labelColor
+                link.lineBreakMode = .byTruncatingMiddle
+                link.setContentCompressionResistancePriority(.defaultLow - 10, for: .horizontal)
+                link.toolTip = path
                 link.setAccessibilityLabel("Open \(path)")
                 alsoRow.addArrangedSubview(link)
                 if i < shown.count - 1 { alsoRow.addArrangedSubview(Self.small(",")) }
@@ -166,6 +185,8 @@ final class SessionBanner: NSView {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: 11.5)
         l.textColor = .secondaryLabelColor
+        l.lineBreakMode = .byTruncatingTail
+        l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return l
     }
 

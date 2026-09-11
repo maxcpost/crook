@@ -76,5 +76,49 @@ extension DiffTests {
         T.ok("U-08  a 900-line whole-file rewrite completes in under 250 ms",
              ms < 250, String(format: "%.0f ms", ms))
         T.eq("U-09  and reports every line on both sides", s3.added, 900)
+
+        // Past the full comparison's limit, a few changes in a long file are
+        // still a few changes. A 700-line file used to report 696 lines
+        // replaced for a rename on two of them.
+        var long = (1...700).map { "line \($0)" }
+        let longOld = long.joined(separator: "\n")
+        long[2] = "LINE 3"
+        long[697] = "LINE 698"
+        let t1 = DispatchTime.now().uptimeNanoseconds
+        let (longLines, s4) = UnifiedDiff.between(longOld, long.joined(separator: "\n"))
+        let longMs = Double(DispatchTime.now().uptimeNanoseconds - t1) / 1e6
+        T.ok("U-10  a two-line rename in a 700-line file is two lines each way, quickly",
+             s4.added == 2 && s4.removed == 2 && longMs < 250
+             && longLines.filter { $0.kind == .added }.compactMap(\.newNo) == [3, 698],
+             String(format: "+%d -%d, %.0f ms", s4.added, s4.removed, longMs))
+
+        // The long-file path, forced on small inputs, against the full comparison.
+        var seed: UInt64 = 0x9E3779B97F4A7C15
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        var rebuilt = true, minimal = true
+        for _ in 0..<60 {
+            let a = (0..<(5 + next(40))).map { _ in "w\(next(6))" }
+            var b = a
+            for _ in 0..<next(8) {
+                switch next(3) {
+                case 0 where !b.isEmpty: b.remove(at: next(b.count))
+                case 1: b.insert("w\(next(6))", at: next(b.count + 1))
+                default: if !b.isEmpty { b[next(b.count)] = "x\(next(4))" }
+                }
+            }
+            let (fast, fs) = UnifiedDiff.between(a.joined(separator: "\n"), b.joined(separator: "\n"),
+                                                 context: 10_000, lcsCellLimit: 0)
+            let (_, full) = UnifiedDiff.between(a.joined(separator: "\n"), b.joined(separator: "\n"), context: 10_000)
+            let newSide = fast.filter { $0.kind != .removed && $0.kind != .gap }.map(\.text)
+            let oldSide = fast.filter { $0.kind != .added && $0.kind != .gap }.map(\.text)
+            if newSide != b.joined(separator: "\n").components(separatedBy: "\n")
+                || oldSide != a.joined(separator: "\n").components(separatedBy: "\n") { rebuilt = false }
+            if fs.added + fs.removed != full.added + full.removed { minimal = false }
+        }
+        T.ok("U-11  the long-file path's lines rebuild both versions exactly", rebuilt)
+        T.ok("U-12  and change no more lines than the full comparison does", minimal)
     }
 }

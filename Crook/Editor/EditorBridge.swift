@@ -110,6 +110,18 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
     }
 
+    #if CROOK_E2E
+    /// Text typed at the start of the file, reported the way CodeMirror
+    /// reports a keystroke. For the self-test only.
+    func e2eType(_ s: String) {
+        let lowest = applyLocal([[0, 0, s]])
+        dirty = true
+        onDirty?(true)
+        if let lowest { onEdit?(lowest) }
+        pushDocument()
+    }
+    #endif
+
     /// Applies CodeMirror-originated changes to the canonical buffer.
     /// Offsets are UTF-16 code units in an LF-only document on both sides.
     @discardableResult

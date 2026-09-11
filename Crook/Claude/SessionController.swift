@@ -105,23 +105,26 @@ final class SessionController: NSObject, NSPopoverDelegate {
         let current = doc.currentText()
         let baseline = s.baseline.flatMap { try? ByteCodec.decode($0).0 as String } ?? current
         let tally = SessionReview.tally(baseline: baseline, current: current)
-        let provider = Providers.current
-        let connected = provider.id == s.record.providerID && provider.isConnected
-        // What is on screen, as bytes, when nothing is unsaved. Undo and Redo
-        // are offered only while it is exactly the version they replace.
-        let onScreen = doc.isDocumentEdited ? nil : try? wc.editor.bridge.data()
+        let connected = Self.provider(for: s) != nil
+        // Undo and Redo are offered only while what is on screen, with nothing
+        // unsaved, is the version they replace. Compared as text: re-encoding
+        // the buffer can't reproduce a file with mixed line endings byte for
+        // byte. The swap itself still checks the disk's exact bytes.
         let final = s.finalBytes
+        let finalText = final.flatMap { try? ByteCodec.decode($0).0 as String }
+        let clean = !doc.isDocumentEdited
         let undo = SessionCopy.swapAvailability(verb: "undo", haveVersion: final != nil, fileVanished: s.fileVanished,
                                                 connected: connected, machine: s.record.machineName,
-                                                diskMatches: onScreen != nil && onScreen == final)
+                                                diskMatches: clean && finalText == current)
         let redo = SessionCopy.swapAvailability(verb: "redo", haveVersion: final != nil, fileVanished: s.fileVanished,
                                                 connected: connected, machine: s.record.machineName,
-                                                diskMatches: onScreen != nil && onScreen == s.baseline)
+                                                diskMatches: clean && s.baseline != nil && baseline == current)
         let nearby = s.record.alsoChanged.map { SessionPlan.relativePath($0, from: s.record.workingDirectory) }
         return SessionCopy.banner(.init(state: s.state, added: tally.added, removed: tally.removed,
                                         fileVanished: s.fileVanished, machineName: s.record.machineName,
                                         nudging: Date() < nudgeUntil, undo: undo, redo: redo,
-                                        alsoChanged: nearby))
+                                        alsoChanged: nearby,
+                                        asksBeforeEditing: SessionPlan.asksBeforeEditing(s.record.filePath)))
     }
 
     // MARK: - starting
@@ -155,12 +158,15 @@ final class SessionController: NSObject, NSPopoverDelegate {
             machineName: doc.remoteProviderID == nil ? nil : Providers.current.displayName,
             showTip: lines == nil && defaults.integer(forKey: Self.startedCountKey) < 3,
             showFirstTime: !defaults.bool(forKey: Self.startedOnceKey),
-            draft: drafts[url.path] ?? "")
+            draft: drafts[url.path] ?? "",
+            asksBeforeEditing: SessionPlan.asksBeforeEditing(url.path))
         let question = AskPopover(context: context)
         question.onDraftChange = { [weak self] text in self?.drafts[url.path] = text }
         question.onOpen = { [weak self] request in
             guard let self else { return }
-            self.drafts[url.path] = nil
+            // The draft stays until a session has run: a check that fails, or
+            // Claude Code closing at the trust question, sends the person back
+            // here to try again with it.
             self.popover?.close()
             self.begin(doc, lines: lines, request: request)
         }
@@ -173,6 +179,9 @@ final class SessionController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        // A popover closed to make way for a new one reports after the new
+        // one is showing.
+        guard (notification.object as? NSPopover) === popover else { return }
         popover = nil
     }
 
@@ -183,6 +192,7 @@ final class SessionController: NSObject, NSPopoverDelegate {
         guard let url = doc.fileURL, starting == nil else { return }
         let provider = Providers.current
         guard providerID(of: doc) == provider.id else { return }
+        popover?.close()
         wc.editor.dismissDiff()
         starting = url
         refresh()
@@ -251,7 +261,7 @@ final class SessionController: NSObject, NSPopoverDelegate {
     /// The disk changed while there were unsaved edits. Claude has to work on
     /// one version, and only the person can say which.
     private func resolveConflict(_ doc: CrookDocument, then done: @escaping (Bool) -> Void) {
-        guard wc.hasConflict, let url = doc.fileURL else { return done(true) }
+        guard wc.hasConflict || doc.diskChangedUnderEdits(), let url = doc.fileURL else { return done(true) }
         let copy = SessionCopy.conflict(fileName: url.lastPathComponent)
         let alert = NSAlert()
         alert.messageText = copy.title
@@ -333,6 +343,10 @@ final class SessionController: NSObject, NSPopoverDelegate {
             self.wc.rail.reload()
             TerminalLauncher.open(folder: session.folder) { [weak self] error in
                 guard let self, let error else { return }
+                // Launch Services can report an error after Terminal ran the
+                // command anyway. A runner that reported in is a session.
+                guard session.state == .opening,
+                      !FileManager.default.fileExists(atPath: session.file("runner.pid").path) else { return }
                 self.registry.discard(session)
                 self.refresh()
                 self.present(SessionCopy.couldNotOpen(error.localizedDescription))
@@ -452,16 +466,31 @@ final class SessionController: NSObject, NSPopoverDelegate {
     }
 
     func fileVanished(_ url: URL) {
-        guard let doc = document, doc.fileURL == url, let s = session(for: doc), s.isLive else { return }
+        guard let doc = document, doc.fileURL == url, let s = session(for: doc), s.isLive, !s.fileVanished else { return }
         s.fileVanished = true
         refresh()
+    }
+
+    /// The file is back where it was, perhaps with the same bytes.
+    func fileReturned(_ url: URL) {
+        guard let doc = document, doc.fileURL == url, let s = session(for: doc), s.fileVanished else { return }
+        s.fileVanished = false
+        refresh()
+    }
+
+    /// Whether Claude has this document's file right now.
+    func isEditing(_ doc: CrookDocument) -> Bool {
+        session(for: doc)?.isLive == true
     }
 
     /// Someone tried to type while Claude has the file. Say why nothing
     /// happened, for four seconds, drawing the eye once.
     private func nudge() {
         guard let doc = document, session(for: doc)?.isLive == true else { return }
-        if Date() >= nudgeUntil { wc.editor.pulseBanner() }
+        if Date() >= nudgeUntil {
+            wc.editor.pulseBanner()
+            announce(SessionCopy.nudgeAnnouncement)
+        }
         nudgeUntil = Date().addingTimeInterval(4)
         refresh()
         nudgeEnds?.cancel()
@@ -479,9 +508,8 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
     private func ended(_ s: ClaudeSession, outcome: SessionRunner.Outcome) {
         restoreFrame(s)
-        let provider = Providers.current
-        let here = provider.id == s.record.providerID
         let url = URL(fileURLWithPath: s.record.filePath)
+        let providerID = s.record.providerID
 
         let protected = s.isRemote ? nil : SessionReview.protectedFolder(for: s.record.workingDirectory, home: Paths.home)
         if let alert = SessionCopy.alert(for: outcome, machine: s.record.machineName, protectedFolder: protected) {
@@ -494,15 +522,20 @@ final class SessionController: NSObject, NSPopoverDelegate {
                 switch outcome {
                 case .claudeMissing: NSWorkspace.shared.open(SessionCopy.installURL)
                 case .folderAccess: NSWorkspace.shared.open(SessionCopy.privacyURL)
-                case .closedWithoutChanges: self?.tryAgain(url)
+                case .closedWithoutChanges, .didNotStart: self?.tryAgain(url, providerID: providerID)
                 default: break
                 }
             }
             return
         }
+        // A session that ran: its request has been made.
+        drafts[s.record.filePath] = nil
 
-        if here && provider.isConnected {
+        // A file on this Mac can always be read, whichever machine the window
+        // is looking at now.
+        if let provider = Self.provider(for: s) {
             if let bytes = provider.contents(s.record.filePath) {
+                s.fileVanished = false
                 // Only a session Crook watched end can say this is Claude's
                 // version. One that ended while Crook was closed may have been
                 // edited since; its last-seen version, if any, stays as it was.
@@ -510,21 +543,26 @@ final class SessionController: NSObject, NSPopoverDelegate {
             } else {
                 s.fileVanished = true
             }
-            wc.rail.reload()
-            s.record.alsoChanged = changedNearby(s)
+            // The sidebar and the files near this one are the window's machine's.
+            if Providers.current.id == providerID {
+                wc.rail.reload()
+                s.record.alsoChanged = changedNearby(s)
+            }
         }
         registry.save(s)
 
-        if !s.endedWhileAway, let doc = document, doc.fileURL == url {
+        if !s.endedWhileAway, let doc = document, doc.fileURL == url, self.providerID(of: doc) == providerID {
             let base = s.baseline.flatMap { try? ByteCodec.decode($0).0 as String } ?? ""
             let t = SessionReview.tally(baseline: base, current: doc.currentText())
             announce(SessionCopy.endedAnnouncement(added: t.added, removed: t.removed))
         }
     }
 
-    private func tryAgain(_ url: URL) {
-        guard let doc = document, doc.fileURL == url else { return }
-        ask(doc, lines: nil)
+    /// Back to the popover, with the request typed before and the lines
+    /// selected now.
+    private func tryAgain(_ url: URL, providerID: String) {
+        guard let doc = document, doc.fileURL == url, self.providerID(of: doc) == providerID else { return }
+        buttonClicked(skipAsking: false)
     }
 
     /// Put Crook back, if it moved for Terminal and nobody has moved it since.
@@ -535,6 +573,14 @@ final class SessionController: NSObject, NSPopoverDelegate {
               let window = wc.window else { return }
         let sameSize = abs(window.frame.width - set.width) < 2 && abs(window.frame.height - set.height) < 2
         guard Self.roughlyEqual(window.frame, set) || (s.reattached && sameSize) else { return }
+        // Not onto a display that has since gone: most of the old frame must
+        // still be on a screen.
+        let area = before.width * before.height
+        let visible = NSScreen.screens.contains { screen in
+            let overlap = screen.visibleFrame.intersection(before)
+            return !overlap.isNull && overlap.width * overlap.height >= area * 0.5
+        }
+        guard visible else { s.record.crookFrameSet = nil; return }
         window.setFrame(before, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         s.record.crookFrameSet = nil
     }
@@ -556,18 +602,24 @@ final class SessionController: NSObject, NSPopoverDelegate {
             registry.discard(s)
             refresh()
         }
+        // The button pressed may be gone now. Keyboard focus goes to the text,
+        // not to the window.
+        if action != .showTerminal && action != .review { wc.editor.focusEditor() }
     }
 
     /// Undo puts the baseline back; Redo puts Claude's version back — each only
     /// if the disk still holds exactly the version it replaces.
     private func swapVersions(_ s: ClaudeSession, doc: CrookDocument, restoring: Bool) {
-        let provider = Providers.current
-        guard let outcome = s.outcome, provider.id == s.record.providerID, provider.isConnected,
+        guard let outcome = s.outcome, let provider = Self.provider(for: s),
               let baseline = s.baseline, let final = s.finalBytes else { return refresh() }
         let (expected, replacement) = restoring ? (final, baseline) : (baseline, final)
         do {
             guard try SessionReview.replace(path: s.record.filePath, on: provider,
-                                            expecting: expected, with: replacement) else { return refresh() }
+                                            expecting: expected, with: replacement) else {
+                refresh()
+                return present(SessionCopy.swapRefused(fileName: URL(fileURLWithPath: s.record.filePath).lastPathComponent,
+                                                        restoring: restoring))
+            }
         } catch {
             wc.presentError(error)
             return
@@ -616,6 +668,8 @@ final class SessionController: NSObject, NSPopoverDelegate {
         case #selector(WorkspaceWindowController.editWithClaudeNow(_:)):
             return hasFile && starting == nil && !live && !wc.fileVanished
         case #selector(WorkspaceWindowController.endClaudeSession(_:)):
+            // Only there while a session is.
+            item.isHidden = !live
             return s?.state == .running
         default:
             return true
@@ -633,6 +687,8 @@ final class SessionController: NSObject, NSPopoverDelegate {
         a.messageText = alert.title
         a.informativeText = alert.message
         alert.buttons.forEach { a.addButton(withTitle: $0) }
+        // Esc answers OK, as it would Cancel.
+        if a.buttons.count > 1, let last = a.buttons.last, last.title == "OK" { last.keyEquivalent = "\u{1b}" }
         let handle: (NSApplication.ModalResponse) -> Void = { response in
             if response == .alertFirstButtonReturn, alert.buttons.count > 1 { onPrimary?() }
         }
@@ -671,10 +727,17 @@ final class SessionController: NSObject, NSPopoverDelegate {
     /// window looking at another machine — counts as changed, so the ending is
     /// a banner to review rather than an alert that might be wrong.
     private static func differsFromBaseline(_ s: ClaudeSession) -> Bool {
-        let provider = Providers.current
-        guard provider.id == s.record.providerID, let baseline = s.baseline,
+        guard let provider = provider(for: s), let baseline = s.baseline,
               let now = provider.contents(s.record.filePath) else { return true }
         return now != baseline
+    }
+
+    /// Where a session's file can be read now: this Mac's always, another
+    /// Mac's only while the window is connected to it.
+    private static func provider(for s: ClaudeSession) -> FileProvider? {
+        guard s.isRemote else { return Providers.local }
+        let p = Providers.current
+        return p.id == s.record.providerID && p.isConnected ? p : nil
     }
 
     /// `claude update`, in Terminal, on whichever Mac needs it. Not a session:
@@ -712,7 +775,11 @@ final class SessionController: NSObject, NSPopoverDelegate {
 /// /exit, `quit` to quit Crook mid-session), then Undo, Redo and Done. With
 /// `CROOK_E2E_PHASE=reattach` it instead picks up a session left running by a
 /// `quit` run and ends it. `CROOK_E2E_REOPEN=1` closes the window once the
-/// session has ended and opens the file again before Undo. Every step is a
+/// session has ended and opens the file again before Undo.
+/// `CROOK_E2E_SUSPEND=1` suspends the session as Ctrl-Z does before ending it.
+/// `CROOK_E2E_MAXWAIT=<s>` ends it that long after starting even without a
+/// change. `CROOK_E2E_TYPE_AFTER=1` types into the file after Done and watches
+/// for autosave to complain. Every step is a
 /// "Crook: E2E" log line; "E2E shot <name> <window ids>" asks the driver to
 /// photograph those windows only.
 private final class E2E {
@@ -894,17 +961,66 @@ extension SessionController {
         }
     }
 
+    private func e2eState(_ pid: Int32) -> String {
+        guard pid > 0 else { return "none" }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-o", "state=", "-p", String(pid)]
+        let out = Pipe()
+        p.standardOutput = out
+        try? p.run()
+        p.waitUntilExit()
+        let s = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? "gone" : s
+    }
+
+    /// Type after the session, as a person would, and watch for AppKit's
+    /// "changed by another application" sheet when autosave runs.
+    private func e2eTypeAndWatchAutosave(path: String) {
+        wc.editor.bridge.e2eType("TYPED-AFTER ")
+        do {
+            var checks = 0
+            func look() {
+                checks += 1
+                let doc = self.wc.document as? CrookDocument
+                let disk = String(decoding: FileManager.default.contents(atPath: path) ?? Data(), as: UTF8.self)
+                self.e2e("typed-after t=\(checks * 10)s sheet=\(self.wc.window?.attachedSheet != nil) edited=\(doc?.isDocumentEdited == true) diskHasIt=\(disk.contains("TYPED-AFTER"))")
+                if self.wc.window?.attachedSheet != nil { self.e2eShot("autosave-sheet") }
+                if checks < 6 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { look() }
+                } else {
+                    self.e2e("finished")
+                    NSApp.terminate(nil)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { look() }
+        }
+    }
+
     private func e2eWaitForQuiet() {
         let e = E2E.shared
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, let s = e.session, s.isLive else { return }
             let quietFor = Double(e.env["CROOK_E2E_QUIET"] ?? "") ?? 15
             let quiet = e.changes > 0 && Date().timeIntervalSince(e.lastChange) > quietFor
-            let tooLong = Date().timeIntervalSince(s.record.startedAt) > 300
+            let tooLong = Date().timeIntervalSince(s.record.startedAt) > (Double(e.env["CROOK_E2E_MAXWAIT"] ?? "") ?? 300)
             guard quiet || tooLong else { return self.e2eWaitForQuiet() }
             if tooLong { self.e2e("timeout-waiting-for-changes") }
             self.e2eFrames("changed")
             self.e2eShot("changed")
+            if e.env["CROOK_E2E_SUSPEND"] != nil, let runner = s.record.runnerPID {
+                // What Ctrl-Z in Claude Code does to Terminal's job.
+                killpg(getpgid(runner), SIGTSTP)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    let child = SessionRegistry.readPID(s.file("child.pid")) ?? 0
+                    self.e2e("suspended runner=\(self.e2eState(runner)) child=\(self.e2eState(child))")
+                    self.e2eShot("suspended")
+                    self.e2e("end-session")
+                    self.registry.requestEnd(s)
+                }
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 switch e.env["CROOK_E2E_END"] ?? "session" {
                 case "exit":
@@ -960,10 +1076,14 @@ extension SessionController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     self.e2e("done folderRemoved=\(!FileManager.default.fileExists(atPath: folder.path))")
                     self.e2eShot("done")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        self.e2e("finished")
-                        NSApp.terminate(nil)
+                    guard E2E.shared.env["CROOK_E2E_TYPE_AFTER"] != nil else {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            self.e2e("finished")
+                            NSApp.terminate(nil)
+                        }
+                        return
                     }
+                    self.e2eTypeAndWatchAutosave(path: path)
                 }
             }
         }

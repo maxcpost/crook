@@ -241,7 +241,16 @@ final class WorkspaceWindowController: NSWindowController {
     @objc func endClaudeSession(_ sender: Any?) { sessions.menuEndSession() }
 
     private func windowIsClosing() {
-        if let doc = document as? CrookDocument { doc.detachFromEditor() }
+        if let doc = document as? CrookDocument {
+            doc.detachFromEditor()
+            // A clean document has nothing worth keeping. Kept, opening the
+            // file again would show its text as it was when the window closed,
+            // whatever has been written to it since.
+            if !doc.isDocumentEdited {
+                doc.removeWindowController(self)
+                doc.close()
+            }
+        }
         editor.showEmptyState(true, onAddProject: { [weak self] in self?.rail.beginAddProject() },
                               onConnect: { [weak self] in self?.beginConnect() })
         syncTitle(nil)
@@ -509,7 +518,9 @@ final class WorkspaceWindowController: NSWindowController {
     private func handleExternalChange(_ change: FileWatcher.Change) {
         guard let doc = document as? CrookDocument, let url = doc.fileURL else { return }
         if case .vanished = change {
-            syncState = .vanished
+            // Reported again every moment the file stays gone; only the first
+            // is news.
+            if syncState != .vanished { syncState = .vanished }
             sessions.fileVanished(url)
             // Keep watching. A branch switch or a delete-then-rewrite removes
             // the path for longer than the grace period, and without this the
@@ -518,6 +529,10 @@ final class WorkspaceWindowController: NSWindowController {
             return
         }
 
+        // The last keystrokes reach Swift a frame after they are typed. Take
+        // them before deciding the buffer is clean, or the reload below would
+        // discard them.
+        if editor.owner === doc { editor.bridge.flushPendingEdits() }
         if doc.isDocumentEdited {
             // Never silently discard the user's edits.
             syncState = .conflict
@@ -526,8 +541,13 @@ final class WorkspaceWindowController: NSWindowController {
         // Clean buffer: reload and keep the reader's place, then say WHICH
         // lines moved. "Something changed" is not reviewable; "these four lines
         // changed" is, and reviewing agent writes is the actual job here.
-        guard let data = Providers.current.contents(url.path),
-              data != doc.currentBytes() else { return }
+        guard let data = Providers.current.contents(url.path) else { return }
+        if syncState == .vanished {
+            // It came back, perhaps with the same bytes.
+            syncState = .inSync
+            sessions.fileReturned(url)
+        }
+        guard data != doc.currentBytes() else { return doc.noteDiskUnchanged() }
         let before = doc.currentText()
         doc.reloadFromDisk()
         let after = doc.currentText()
