@@ -46,6 +46,9 @@ final class ClaudeSession {
     var handledStart = false
     /// Found already over when Crook launched: its failures are old news.
     var endedWhileAway = false
+    /// Picked up after Crook restarted. Crook centres its window on launch, so
+    /// only the size it set can be compared, not the position.
+    var reattached = false
 
     init(folder: URL, record: Record, state: State) {
         self.folder = folder
@@ -260,6 +263,7 @@ final class SessionRegistry {
             }
             let s = ClaudeSession(folder: folder, record: record, state: .opening)
             s.handledStart = true
+            s.reattached = true
             if let outcome = record.outcome {
                 if let ended = record.endedAt, now.timeIntervalSince(ended) > 7 * 86_400 {
                     try? fm.removeItem(at: folder)

@@ -109,7 +109,7 @@ enum ClaudeRunnerTests {
                                 _ args: [String], ssh: URL? = nil) -> Bool {
         do {
             try TerminalLauncher.prepare(folder: folder, command: command, claudeArguments: args,
-                                         bounds: nil, bundleID: nil, includeWindowScript: false,
+                                         frame: nil, bundleID: nil, includeWindowScript: false,
                                          sshPath: ssh?.path ?? "/usr/bin/ssh")
             return true
         } catch {
@@ -264,35 +264,36 @@ enum ClaudeRunnerTests {
 
     static func placement() {
         T.suite("claude-placement — Terminal beside Crook")
+        // Everything in AppKit's global coordinates, the space Terminal's
+        // `frame` speaks (check S2: its `bounds` does not convert reliably
+        // across displays).
         let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)   // 14-inch MacBook Pro, less the menu bar
         let primary: CGFloat = 982
-        let roomy = TerminalLauncher.placement(crook: CGRect(x: 40, y: 100, width: 800, height: 700),
-                                               visible: visible, primaryHeight: primary)
+        let roomy = TerminalLauncher.placement(crook: CGRect(x: 40, y: 100, width: 800, height: 700), visible: visible)
         T.ok("CL-01  room on the right: Terminal goes there and Crook stays put",
-             roomy.crook == nil && roomy.terminal == CGRect(x: 840, y: 182, width: 672, height: 700), "\(roomy)")
-        let rightHeavy = TerminalLauncher.placement(crook: CGRect(x: 700, y: 100, width: 800, height: 700),
-                                                    visible: visible, primaryHeight: primary)
+             roomy.crook == nil && roomy.terminal == CGRect(x: 840, y: 100, width: 672, height: 700), "\(roomy)")
+        let rightHeavy = TerminalLauncher.placement(crook: CGRect(x: 700, y: 100, width: 800, height: 700), visible: visible)
         T.ok("CL-02  room only on the left: Terminal goes there instead",
              rightHeavy.crook == nil && rightHeavy.terminal.maxX == 700 && rightHeavy.terminal.width == 700, "\(rightHeavy)")
-        let wide = TerminalLauncher.placement(crook: CGRect(x: 100, y: 50, width: 1300, height: 850),
-                                              visible: visible, primaryHeight: primary)
+        let wide = TerminalLauncher.placement(crook: CGRect(x: 100, y: 50, width: 1300, height: 850), visible: visible)
         T.ok("CL-03  no room: Crook moves to the left edge and narrows only as far as it must",
              wide.crook == CGRect(x: 0, y: 50, width: 952, height: 850), "\(wide)")
         T.ok("CL-04  and Terminal takes the rest",
-             wide.terminal == CGRect(x: 952, y: 82, width: 560, height: 850), "\(wide)")
+             wide.terminal == CGRect(x: 952, y: 50, width: 560, height: 850), "\(wide)")
         let tiny = TerminalLauncher.placement(crook: CGRect(x: 0, y: 0, width: 1100, height: 700),
-                                              visible: CGRect(x: 0, y: 0, width: 1200, height: 760),
-                                              primaryHeight: 800, crookMinWidth: 720)
+                                              visible: CGRect(x: 0, y: 0, width: 1200, height: 760), crookMinWidth: 720)
         T.ok("CL-05  never narrower than Crook's minimum, overlapping on a screen that small",
              tiny.crook?.width == 720 && tiny.terminal.width == 560 && tiny.terminal.maxX == 1200, "\(tiny)")
         let second = TerminalLauncher.placement(crook: CGRect(x: -3000, y: 200, width: 1200, height: 900),
-                                                visible: CGRect(x: -3440, y: 17, width: 3440, height: 1377),
-                                                primaryHeight: primary)
+                                                visible: CGRect(x: -3440, y: 17, width: 3440, height: 1377))
         T.ok("CL-06  on a display left of the main one, coordinates stay global",
-             second.crook == nil && second.terminal.minX == -1800 && second.terminal.minY == -118, "\(second)")
+             second.crook == nil && second.terminal == CGRect(x: -1800, y: 200, width: 760, height: 900), "\(second)")
+        // The window server reports frames top-left; 982 - 190 - 690 = 102, within a few points of 100.
         T.ok("CL-07  landing within a few points counts; landing somewhere else does not",
-             TerminalLauncher.landed(CGRect(x: 845, y: 190, width: 680, height: 690), near: roomy.terminal)
-             && !TerminalLauncher.landed(CGRect(x: 845, y: 33, width: 680, height: 690), near: roomy.terminal)
-             && !TerminalLauncher.landed(nil, near: roomy.terminal))
+             TerminalLauncher.landed(CGRect(x: 845, y: 190, width: 680, height: 690), near: roomy.terminal, primaryHeight: primary)
+             && !TerminalLauncher.landed(CGRect(x: 845, y: 33, width: 680, height: 690), near: roomy.terminal, primaryHeight: primary)
+             && !TerminalLauncher.landed(nil, near: roomy.terminal, primaryHeight: primary))
+        T.eq("CL-08  the runner is handed left, bottom, right, top",
+             TerminalLauncher.frameEdges(CGRect(x: -560, y: 300, width: 560, height: 900)), "-560 300 0 1200")
     }
 }

@@ -38,6 +38,9 @@ final class SessionController: NSObject, NSPopoverDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(windowResized),
                                                name: NSWindow.didResizeNotification, object: wc.window)
         windowResized()
+        #if CROOK_E2E
+        DispatchQueue.main.async { [weak self] in self?.e2eStart() }
+        #endif
     }
 
     // MARK: - the open file
@@ -61,6 +64,9 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
     /// Make the button, the banner and the editor agree with the open file.
     func refresh() {
+        #if CROOK_E2E
+        defer { e2eNote() }
+        #endif
         guard let doc = document, let url = doc.fileURL else {
             accessory.setMode(.hidden)
             wc.editor.setBanner(nil)
@@ -298,7 +304,7 @@ final class SessionController: NSObject, NSPopoverDelegate {
             session.record.crookFrameBefore = self.wc.window?.frame
             do {
                 try TerminalLauncher.prepare(folder: session.folder, command: command,
-                                             claudeArguments: plan.arguments, bounds: placement?.terminal,
+                                             claudeArguments: plan.arguments, frame: placement?.terminal,
                                              bundleID: Bundle.main.bundleIdentifier)
             } catch {
                 self.registry.discard(session)
@@ -340,16 +346,17 @@ final class SessionController: NSObject, NSPopoverDelegate {
     }
 
     private func placement() -> TerminalLauncher.Placement? {
-        guard let window = wc.window, let screen = window.screen ?? NSScreen.main,
-              let primary = NSScreen.screens.first else { return nil }
+        guard let window = wc.window, let screen = window.screen ?? NSScreen.main else { return nil }
         return TerminalLauncher.placement(crook: window.frame, visible: screen.visibleFrame,
-                                          primaryHeight: primary.frame.height,
                                           crookMinWidth: window.minSize.width)
     }
 
     // MARK: - while it runs
 
     private func sessionChanged(_ s: ClaudeSession) {
+        #if CROOK_E2E
+        defer { e2eSessionChanged(s) }
+        #endif
         switch s.state {
         case .running where !s.handledStart:
             s.handledStart = true
@@ -373,7 +380,7 @@ final class SessionController: NSObject, NSPopoverDelegate {
     /// Move Crook aside only once Terminal is where it was asked to be. If it
     /// landed somewhere else, a narrowed Crook would be worse than overlap.
     private func makeRoom(for s: ClaudeSession, crook: CGRect, terminal: CGRect, attempts: Int = 15) {
-        guard s.isLive, let window = wc.window else { return }
+        guard s.isLive else { return }
         let windowFile = s.file("window")
         guard let text = try? String(contentsOf: windowFile, encoding: .utf8) else {
             // The runner writes this a moment after it reports in.
@@ -385,9 +392,21 @@ final class SessionController: NSObject, NSPopoverDelegate {
         }
         // Empty: Terminal wouldn't say which window, so neither window moves.
         guard let number = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self, s.isLive,
-                  TerminalLauncher.landed(TerminalLauncher.frameOfWindow(number: number), near: terminal) else { return }
+        confirmPlaced(s, window: number, crook: crook, terminal: terminal, checks: 4)
+    }
+
+    /// The runner places Terminal twice, a second apart, because Terminal still
+    /// moves a brand-new window in that first moment. Look a few times before
+    /// deciding it didn't land.
+    private func confirmPlaced(_ s: ClaudeSession, window number: Int, crook: CGRect, terminal: CGRect, checks: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, s.isLive, let window = self.wc.window else { return }
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            guard TerminalLauncher.landed(TerminalLauncher.frameOfWindow(number: number), near: terminal,
+                                          primaryHeight: primaryHeight) else {
+                if checks > 1 { self.confirmPlaced(s, window: number, crook: crook, terminal: terminal, checks: checks - 1) }
+                return
+            }
             window.setFrame(crook, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
             s.record.crookFrameSet = window.frame
             self.registry.save(s)
@@ -400,6 +419,9 @@ final class SessionController: NSObject, NSPopoverDelegate {
         guard let doc = document, doc.fileURL == url, let s = session(for: doc), s.isLive else { return false }
         s.fileVanished = false
         let lines = SessionReview.changedLines(before: before, after: after)
+        #if CROOK_E2E
+        e2eChanged(lines)
+        #endif
         if let first = lines.first {
             wc.editor.bridge.pushChangedLines(lines)
             wc.editor.bridge.revealLine(first)
@@ -485,9 +507,13 @@ final class SessionController: NSObject, NSPopoverDelegate {
     }
 
     /// Put Crook back, if it moved for Terminal and nobody has moved it since.
+    /// After a restart Crook has re-centred its own window, so there only its
+    /// size can say whether the person changed it.
     private func restoreFrame(_ s: ClaudeSession) {
         guard let set = s.record.crookFrameSet, let before = s.record.crookFrameBefore,
-              let window = wc.window, Self.roughlyEqual(window.frame, set) else { return }
+              let window = wc.window else { return }
+        let sameSize = abs(window.frame.width - set.width) < 2 && abs(window.frame.height - set.height) < 2
+        guard Self.roughlyEqual(window.frame, set) || (s.reattached && sameSize) else { return }
         window.setFrame(before, display: true, animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         s.record.crookFrameSet = nil
     }
@@ -644,7 +670,7 @@ final class SessionController: NSObject, NSPopoverDelegate {
         }
         do {
             try TerminalLauncher.prepare(folder: folder, command: command, claudeArguments: ["update"],
-                                         bounds: nil, bundleID: nil, includeWindowScript: false)
+                                         frame: nil, bundleID: nil, includeWindowScript: false)
         } catch {
             return present(SessionCopy.couldNotOpen(error.localizedDescription))
         }
@@ -652,3 +678,239 @@ final class SessionController: NSObject, NSPopoverDelegate {
         TerminalLauncher.open(folder: folder) { _ in }
     }
 }
+
+#if CROOK_E2E
+// MARK: - end-to-end self-test
+
+/// Built only with `CROOK_SWIFT_FLAGS="-D CROOK_E2E" ./scripts/build.sh`, so it
+/// never ships.
+///
+/// `CROOK_E2E_CLAUDE="<request>"` with a file to open drives one real session:
+/// the popover, the checks, Terminal, claude, the reload, then an ending
+/// (`CROOK_E2E_END`: `session` for End Session, `exit` for the driver to type
+/// /exit, `quit` to quit Crook mid-session), then Undo, Redo and Done. With
+/// `CROOK_E2E_PHASE=reattach` it instead picks up a session left running by a
+/// `quit` run and ends it. Every step is a "Crook: E2E" log line; "E2E shot
+/// <name> <window ids>" asks the driver to photograph those windows only.
+private final class E2E {
+    static let shared = E2E()
+    let env = ProcessInfo.processInfo.environment
+    var lastNote = ""
+    var lastChange = Date.distantPast
+    var changes = 0
+    var session: ClaudeSession?
+    var reviewed = false
+    var watching = false
+}
+
+extension SessionController {
+
+    private func e2e(_ message: String) { NSLog("Crook: E2E %@", message) }
+
+    private var e2eOn: Bool { E2E.shared.env["CROOK_E2E_CLAUDE"] != nil }
+
+    func e2eStart() {
+        let e = E2E.shared
+        guard let request = e.env["CROOK_E2E_CLAUDE"] else { return }
+        let lines = e.env["CROOK_E2E_LINES"].flatMap { s -> ClosedRange<Int>? in
+            let p = s.split(separator: "-").compactMap { Int($0) }
+            return p.count == 2 && p[0] <= p[1] ? p[0]...p[1] : nil
+        }
+        e2eWhenDocumentReady(tries: 120) { [weak self] doc in
+            guard let self else { return }
+            if let f = e.env["CROOK_E2E_FRAME"]?.split(separator: " ").compactMap({ Double($0) }), f.count == 4 {
+                self.wc.window?.setFrame(NSRect(x: f[0], y: f[1], width: f[2], height: f[3]), display: true)
+            }
+            self.e2e("open \(doc.fileURL?.path ?? "?") phase=\(e.env["CROOK_E2E_PHASE"] ?? "full") frame=\(self.wc.window?.frame ?? .zero)")
+            if e.env["CROOK_E2E_PHASE"] == "reattach" {
+                guard let s = self.session(for: doc) else {
+                    self.e2e("reattach no-session")
+                    return NSApp.terminate(nil)
+                }
+                e.session = s
+                self.e2e("reattach state=\(s.state) readOnly=\(s.isLive)")
+                self.e2eShot("reattached")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self.e2e("end-session")
+                    self.registry.requestEnd(s)
+                }
+                return
+            }
+            self.e2eShot("idle")
+            self.ask(doc, lines: lines)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                self.e2eShot("popover")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.popover?.close()
+                    self.begin(doc, lines: lines, request: request)
+                }
+            }
+        }
+    }
+
+    private func e2eWhenDocumentReady(tries: Int, _ go: @escaping (CrookDocument) -> Void) {
+        if let doc = document, doc.fileURL != nil, wc.editor.bridge.isReady {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { go(doc) }
+            return
+        }
+        guard tries > 0 else {
+            e2e("no-document")
+            return NSApp.terminate(nil)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.e2eWhenDocumentReady(tries: tries - 1, go)
+        }
+    }
+
+    private func e2eTerminalWindow() -> Int? {
+        guard let s = E2E.shared.session,
+              let t = try? String(contentsOf: s.file("window"), encoding: .utf8) else { return nil }
+        return Int(t.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Ask the driver to photograph Crook's window, and Terminal's if there is one.
+    private func e2eShot(_ name: String) {
+        var ids = [wc.window?.windowNumber ?? 0]
+        if let t = e2eTerminalWindow() { ids.append(t) }
+        e2e("shot \(name) \(ids.map(String.init).joined(separator: " "))")
+    }
+
+    private func e2eFrames(_ label: String) {
+        var line = "frames \(label) crook=\(wc.window?.frame ?? .zero)"
+        if let t = e2eTerminalWindow(), let cg = TerminalLauncher.frameOfWindow(number: t) {
+            let h = NSScreen.screens.first?.frame.height ?? 0
+            line += " terminal(appkit)=\(CGRect(x: cg.minX, y: h - cg.maxY, width: cg.width, height: cg.height))"
+        }
+        if let s = E2E.shared.session, let p = placements[s.id] {
+            line += " planned-terminal=\(p.terminal) planned-crook=\(String(describing: p.crook))"
+        }
+        e2e(line)
+    }
+
+    func e2eNote() {
+        guard e2eOn else { return }
+        let doc = document
+        let s = doc.flatMap { session(for: $0) }
+        let content = doc.flatMap { d in s.flatMap { banner(for: $0, doc: d) } }
+        let shown = content.map { "\($0.title) | \($0.note ?? "-") | \($0.buttons.map { $0.enabled ? $0.title : "(\($0.title))" })" } ?? "none"
+        let note = "state=\(s.map { "\($0.state)" } ?? "none") starting=\(starting != nil) button=\(accessory.mode) banner=\(shown)"
+        guard note != E2E.shared.lastNote else { return }
+        E2E.shared.lastNote = note
+        e2e("note \(note)")
+    }
+
+    func e2eChanged(_ lines: [Int]) {
+        guard e2eOn else { return }
+        E2E.shared.changes += 1
+        E2E.shared.lastChange = Date()
+        e2e("change lines=\(lines)")
+    }
+
+    func e2eSessionChanged(_ s: ClaudeSession) {
+        let e = E2E.shared
+        guard e2eOn else { return }
+        e.session = s
+        e2e("session state=\(s.state) folder=\(s.folder.path)")
+        switch s.state {
+        case .running where e.env["CROOK_E2E_PHASE"] != "reattach" && !e.watching:
+            e.watching = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self else { return }
+                self.e2eFrames("running")
+                self.e2eShot("running")
+                self.e2eTypeWhileReadOnly()
+            }
+            e2eWaitForQuiet()
+        case .ended(let outcome):
+            guard !e.reviewed else { return }
+            e.reviewed = true
+            e2e("ended outcome=\(outcome)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.e2eReview(s) }
+        default:
+            break
+        }
+    }
+
+    /// Put text into the editor the ways a person could, and check none of it
+    /// reached the buffer.
+    private func e2eTypeWhileReadOnly() {
+        guard let wv = wc.editor.bridge.webView else { return }
+        let js = """
+        (() => {
+          const c = document.querySelector('.cm-content');
+          c.focus();
+          c.dispatchEvent(new KeyboardEvent('keydown', {key: 'x', bubbles: true, cancelable: true}));
+          document.execCommand('insertText', false, 'TYPED-WHILE-READONLY');
+          return c.innerText.includes('TYPED-WHILE-READONLY');
+        })()
+        """
+        wv.evaluateJavaScript(js) { [weak self] value, error in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                guard let self else { return }
+                let buffer = self.wc.editor.bridge.text as String
+                self.e2e("typed-while-readonly domShowsIt=\(String(describing: value)) bufferHasIt=\(buffer.contains("TYPED-WHILE-READONLY")) nudging=\(Date() < self.nudgeUntil) error=\(String(describing: error))")
+                self.e2eShot("nudge")
+            }
+        }
+    }
+
+    private func e2eWaitForQuiet() {
+        let e = E2E.shared
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, let s = e.session, s.isLive else { return }
+            let quietFor = Double(e.env["CROOK_E2E_QUIET"] ?? "") ?? 15
+            let quiet = e.changes > 0 && Date().timeIntervalSince(e.lastChange) > quietFor
+            let tooLong = Date().timeIntervalSince(s.record.startedAt) > 300
+            guard quiet || tooLong else { return self.e2eWaitForQuiet() }
+            if tooLong { self.e2e("timeout-waiting-for-changes") }
+            self.e2eFrames("changed")
+            self.e2eShot("changed")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                switch e.env["CROOK_E2E_END"] ?? "session" {
+                case "exit":
+                    self.e2e("send-exit \(self.e2eTerminalWindow() ?? 0)")
+                case "quit":
+                    self.e2e("quitting-mid-session")
+                    NSApp.terminate(nil)
+                default:
+                    self.e2e("end-session")
+                    self.registry.requestEnd(s)
+                }
+            }
+        }
+    }
+
+    private func e2eReview(_ s: ClaudeSession) {
+        guard document != nil else {
+            e2e("review no-document")
+            return NSApp.terminate(nil)
+        }
+        let path = s.record.filePath
+        let provider = Providers.current
+        e2eFrames("ended")
+        e2eShot("ended")
+        e2e("terminal-window-still-open=\(e2eTerminalWindow().flatMap { TerminalLauncher.frameOfWindow(number: $0) } != nil)")
+        let final = s.finalBytes
+        bannerAction(.undo)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            self.e2e("undo diskIsBaseline=\(provider.contents(path) == s.baseline) bufferIsBaseline=\((try? self.wc.editor.bridge.data()) == s.baseline)")
+            self.e2eShot("undone")
+            self.bannerAction(.redo)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                self.e2e("redo diskIsFinal=\(final != nil && provider.contents(path) == final)")
+                let folder = s.folder
+                self.bannerAction(.done)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    self.e2e("done folderRemoved=\(!FileManager.default.fileExists(atPath: folder.path))")
+                    self.e2eShot("done")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        self.e2e("finished")
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
+        }
+    }
+}
+#endif

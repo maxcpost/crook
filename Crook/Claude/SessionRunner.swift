@@ -150,8 +150,11 @@ enum SessionRunner {
       W=$(/usr/bin/osascript window.applescript find "$(tty)" 2>/dev/null)
       [[ $W == <-> ]] || W=""
       print -r -- "$W" > window
-      if [[ -n $W && -s bounds ]]; then
-        /usr/bin/osascript window.applescript place "$W" ${(s: :)"$(<bounds)"} >/dev/null 2>&1
+      if [[ -n $W && -s frame ]]; then
+        /usr/bin/osascript window.applescript place "$W" ${(s: :)"$(<frame)"} >/dev/null 2>&1
+        # A brand-new window is still Terminal's to position for a moment.
+        # Say it again once it has settled.
+        ( sleep 1; /usr/bin/osascript window.applescript place "$W" ${(s: :)"$(<frame)"} ) >/dev/null 2>&1 &!
       fi
     fi
 
@@ -230,7 +233,10 @@ enum SessionRunner {
     			end repeat
     			return ""
     		else if verb is "place" then
-    			set bounds of window id ((item 2 of argv) as integer) to {(item 3 of argv) as integer, (item 4 of argv) as integer, (item 5 of argv) as integer, (item 6 of argv) as integer}
+    			-- frame, not bounds: left, bottom, right, top in AppKit's global
+    			-- coordinates, which land on the right display whatever screen
+    			-- the window starts on.
+    			set frame of window id ((item 2 of argv) as integer) to {(item 3 of argv) as integer, (item 4 of argv) as integer, (item 5 of argv) as integer, (item 6 of argv) as integer}
     		else if verb is "close-when-idle" then
     			set w to window id ((item 2 of argv) as integer)
     			repeat 100 times

@@ -21,7 +21,7 @@ enum TerminalLauncher {
     /// `includeWindowScript` and `sshPath` exist for the tests, which run the
     /// real runner without Terminal and with a stand-in for ssh.
     static func prepare(folder: URL, command: Command, claudeArguments: [String],
-                        bounds: CGRect?, bundleID: String?,
+                        frame: CGRect?, bundleID: String?,
                         includeWindowScript: Bool = true, sshPath: String = "/usr/bin/ssh") throws {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true,
@@ -42,10 +42,7 @@ enum TerminalLauncher {
                 + [host, SessionRunner.remoteCommand(workingDirectory: dir, arguments: claudeArguments)]
             try put("argv", SessionRunner.encodeFields(ssh))
         }
-        if let b = bounds {
-            let edges = [b.minX, b.minY, b.maxX, b.maxY].map { String(Int($0.rounded())) }
-            try put("bounds", Data(edges.joined(separator: " ").utf8))
-        }
+        if let frame { try put("frame", Data(frameEdges(frame).utf8)) }
         if let bundleID { try put("bundle", Data(bundleID.utf8)) }
         if includeWindowScript { try put("window.applescript", Data(SessionRunner.windowScript.utf8)) }
         try put("launch.command", Data(SessionRunner.localScript.utf8), mode: 0o700)
@@ -69,11 +66,13 @@ enum TerminalLauncher {
     // MARK: - beside Crook
 
     struct Placement: Equatable {
-        /// Terminal's frame in the top-left-origin global coordinates its
-        /// AppleScript `bounds` and CGWindowList both use.
+        /// Terminal's frame, in AppKit's global coordinates: the space
+        /// Terminal's AppleScript `frame` speaks. (Its `bounds` converts
+        /// through whichever screen the window happens to be on, and landed
+        /// windows on the wrong display — check S2.)
         let terminal: CGRect
-        /// Crook's new frame, in AppKit coordinates, when Crook has to make
-        /// room; nil when Terminal fits beside it as it is.
+        /// Crook's new frame when Crook has to make room; nil when Terminal
+        /// fits beside it as it is.
         let crook: CGRect?
     }
 
@@ -81,38 +80,36 @@ enum TerminalLauncher {
     ///
     /// Right if it fits, left if that fits, otherwise Crook slides to the left
     /// edge — narrowing only as far as it must and never below its own minimum
-    /// — and Terminal takes the right. `primaryHeight` converts AppKit's
-    /// bottom-left origin into the top-left one Terminal speaks.
-    static func placement(crook: CGRect, visible: CGRect, primaryHeight: CGFloat,
-                          crookMinWidth: CGFloat = 720,
+    /// — and Terminal takes the right.
+    static func placement(crook: CGRect, visible: CGRect, crookMinWidth: CGFloat = 720,
                           terminalMin: CGFloat = 560, terminalMax: CGFloat = 760) -> Placement {
         let top = min(crook.maxY, visible.maxY)
         let bottom = max(crook.minY, visible.minY)
         let height = max(0, top - bottom)
-        func topLeft(_ r: CGRect) -> CGRect {
-            CGRect(x: r.minX, y: primaryHeight - r.maxY, width: r.width, height: r.height)
-        }
 
         let rightRoom = visible.maxX - crook.maxX
         if rightRoom >= terminalMin {
             let w = min(rightRoom, terminalMax)
-            return Placement(terminal: topLeft(CGRect(x: crook.maxX, y: bottom, width: w, height: height)),
-                             crook: nil)
+            return Placement(terminal: CGRect(x: crook.maxX, y: bottom, width: w, height: height), crook: nil)
         }
         let leftRoom = crook.minX - visible.minX
         if leftRoom >= terminalMin {
             let w = min(leftRoom, terminalMax)
-            return Placement(terminal: topLeft(CGRect(x: crook.minX - w, y: bottom, width: w, height: height)),
-                             crook: nil)
+            return Placement(terminal: CGRect(x: crook.minX - w, y: bottom, width: w, height: height), crook: nil)
         }
         let crookWidth = max(crookMinWidth, min(crook.width, visible.width - terminalMin))
         let newCrook = CGRect(x: visible.minX, y: bottom, width: crookWidth, height: height)
         let w = max(terminalMin, min(terminalMax, visible.maxX - newCrook.maxX))
-        let terminal = CGRect(x: visible.maxX - w, y: bottom, width: w, height: height)
-        return Placement(terminal: topLeft(terminal), crook: newCrook)
+        return Placement(terminal: CGRect(x: visible.maxX - w, y: bottom, width: w, height: height), crook: newCrook)
     }
 
-    /// Where a window actually is, according to the window server.
+    /// What the runner hands Terminal: left, bottom, right, top, in whole points.
+    static func frameEdges(_ r: CGRect) -> String {
+        [r.minX, r.minY, r.maxX, r.maxY].map { String(Int($0.rounded())) }.joined(separator: " ")
+    }
+
+    /// Where a window actually is, according to the window server — which
+    /// reports frames with a top-left origin.
     ///
     /// Terminal's AppleScript window id is the same number CGWindowList
     /// reports, which is what lets Crook check a placement landed.
@@ -123,12 +120,16 @@ enum TerminalLauncher {
         return CGRect(dictionaryRepresentation: bounds as CFDictionary)
     }
 
-    /// Close enough to call it placed. Terminal rounds its size to whole
-    /// character cells, so exact equality would never hold.
-    static func landed(_ actual: CGRect?, near expected: CGRect, tolerance: CGFloat = 40) -> Bool {
+    /// Close enough to call it placed. `actual` is the window server's
+    /// top-left frame, `expected` the AppKit one; `primaryHeight` is the
+    /// height of the screen at the origin, which relates the two. Terminal
+    /// rounds its size to whole character cells, so exact equality never holds.
+    static func landed(_ actual: CGRect?, near expected: CGRect, primaryHeight: CGFloat,
+                       tolerance: CGFloat = 40) -> Bool {
         guard let a = actual else { return false }
+        let bottom = primaryHeight - a.maxY
         return abs(a.minX - expected.minX) <= tolerance
-            && abs(a.minY - expected.minY) <= tolerance
+            && abs(bottom - expected.minY) <= tolerance
             && abs(a.width - expected.width) <= tolerance
     }
 }

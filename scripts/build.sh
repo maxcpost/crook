@@ -51,8 +51,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key><string>Crook</string>
   <key>CFBundleIdentifier</key><string>com.newvisiondevgrp.Crook</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>0.3.0</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>NSHumanReadableCopyright</key><string>MIT licensed. See THIRD-PARTY.md for bundled components.</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -90,9 +90,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 echo "==> swiftc"
+# CROOK_SWIFT_FLAGS adds compiler flags for a one-off build, such as
+# "-D CROOK_E2E" for the Edit with Claude end-to-end self-test. Releases never
+# set it, so nothing behind those flags ships.
 xcrun swiftc -target arm64-apple-macos26.0 \
   -module-name Crook \
   -O -whole-module-optimization \
+  ${CROOK_SWIFT_FLAGS:-} \
   $(find Crook -name '*.swift' -not -path 'Crook/Remote/Agent/*' | sort | tr '\n' ' ') \
   -o "$APP/Contents/MacOS/Crook"
 
