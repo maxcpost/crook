@@ -17,4 +17,6 @@ if want("roots")   { ProjectRootsTests.run() }
 if want("doclife") { DocumentLifetimeTests.run() }
 if want("regress")  { RegressionTests.run() }
 
+if want("claude-plan") { ClaudePlanTests.run() }
+
 exit(T.summary())
