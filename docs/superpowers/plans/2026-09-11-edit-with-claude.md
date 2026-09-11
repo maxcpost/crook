@@ -4528,3 +4528,15 @@ Recorded as they happened. The code is authoritative where it differs from the b
    - CL-01 to CL-07 were rewritten for AppKit coordinates, and CL-08 was added.
 4. **Frame restore after a restart.** Crook recentres its window at launch, so a reattached session compares only the size it set (`ClaudeSession.reattached`).
 5. **End-to-end self-test.** It lives behind `#if CROOK_E2E` in `SessionController.swift`, with `CROOK_SWIFT_FLAGS` added to `build.sh` and `scripts/e2e-claude.py` as the driver. The shipped binary contains none of it (checked with `strings`). Results are in spec §14.1.
+6. **Code review of the finished branch.** Fixed, with tests where the logic allows:
+   - **Writes follow symlinks.** `LocalProvider.write` replaces the file a symlink resolves to, through a staging file and `replaceItemAt`, so `CLAUDE.md → AGENTS.md` stays a link and keeps its permissions and extended attributes (CV-28, CV-29).
+   - **The checked `claude` is the one run.** The local runner runs the path the checks verified, falling back to PATH. The remote runner exports the login shell's PATH before `exec`, and both remote scripts read marked lines, so a talkative login script can't be taken for the answer. `zsh -f` everywhere, and `--` before the ssh host (CR-13, CR-23, CR-24).
+   - **`finalBytes` means a version Crook saw.** It is written from the disk bytes of every change as it lands, and at the end only for a session Crook watched end. `swapAvailability` gained `haveVersion:` (CV-30).
+   - **A failed Use Disk Version** shows `couldNotReadDisk` and cancels, instead of saving over the disk (CV-31).
+   - **`saveBeforeSession`** flushes pending edits first.
+   - **Which document is showing** is decided by `editor.owner`: `detachFromEditor` clears it, and `SessionController.document` requires it. The end-of-session retarget for a closed window was removed. `retarget(to:)` uses the same test, which fixes a bug from before this feature: after the red button, clicking the same file did nothing.
+   - **`requestEnd`** signals `child.pid` only while its parent is the runner, else the runner once `isRunner` confirms it, and checks again before SIGKILL (CG-20). Failure alerts use `discard(_:deletingFolderAfter: 10)` (CG-21, CG-22).
+   - **`EditorBridge.revealLine(_:)` became `reveal(lines:)`**, calling `scrollToLines`, which leaves the view alone if any changed line is visible or the reader scrolled by wheel, scroll bar or keys in the last 3 s. `changedAnnouncement` gives a range only for contiguous lines (CV-32, CV-33).
+   - **`SessionBanner.apply`** updates its buttons in place when the actions and titles are unchanged. `ClaudeButton` sizes its container to fit.
+   - **`ClaudePreflight.systemLocations`** is a variable, so CF-09 and CF-10 set this Mac's Homebrew install aside instead of skipping. The version check's time limit is 4 s.
+   - **Not changed:** the reviewer read spec §10.1 as forbidding the home folder as a starting folder. The code starts in the file's own folder, which is home only for a file directly in it. The spec was corrected instead.
