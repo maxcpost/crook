@@ -97,7 +97,35 @@ your projects — no dotfiles, no sidecars, no index.
 | `⌘S` | Save |
 | `⌘R` | Reload from disk, discarding your edits |
 | `⌘D` | Show what changed since you last opened this file |
+| `⇧⌘E` | Edit with Claude |
 | `⌘+` `⌘−` `⌘0` | Bigger, smaller, actual size |
+
+### Editing with Claude
+
+Some changes are easier to describe than to make: rename something that
+appears in a dozen places, turn a section into a checklist, tighten a skill's
+description. Click **Edit with Claude** at the top right of the window, or
+press `⇧⌘E`.
+
+Say what you want in the box that appears — or leave it empty — and press
+Return. Crook opens Claude Code in Terminal, beside this window, already in the
+right folder and already told which file you mean. If you selected some lines
+first, it knows those too. Talk to Claude there. Every change it saves shows
+up in Crook straight away, highlighted.
+
+While Claude has the file it's read-only in Crook, so the two of you never type
+over each other. When you're done, type `/exit` in Terminal. Crook comes back
+to the front and says what changed: **Review Changes** shows the diff, and
+**Undo Changes** puts the file back exactly as it was.
+
+You need [Claude Code](https://code.claude.com/docs/en/setup) installed, and
+Crook tells you if it isn't. The first time you use it in a folder, Claude Code
+asks whether you trust that folder; choose **Yes, I trust this folder**. For a
+file on another Mac, Claude runs on that Mac, over the connection Crook already
+has.
+
+Claude can change the open file without asking. If a change needs other files
+too, Claude Code asks you before it touches each one.
 
 ---
 

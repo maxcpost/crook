@@ -4510,3 +4510,21 @@ Then report to the owner, and wait for their go-ahead before pushing the branch,
   - `ClaudePreflight.checkLocal(home:loginShell:)` has the same defaults in the tests and the controller.
   - `SessionController.reviewBaseline(for:)` is used in `showChanges(for:)`.
 
+
+---
+
+## Deviations during execution
+
+Recorded as they happened. The code is authoritative where it differs from the blocks above.
+
+1. **`revealLine` became `scrollToLine` in `editor.js`.** `editor.js` already declares a `revealLine` decoration, and esbuild refused the duplicate. The Swift method is still `EditorBridge.revealLine(_:)`; only its call into the page changed.
+2. **CF-14 added.** CF-09 and CF-10 skip on any Mac with a system-wide Claude Code (this one has `/opt/homebrew/bin/claude`). CF-14 exercises `ClaudePreflight.run`'s time limit directly, independent of where Claude Code is installed.
+3. **Placement uses Terminal's `frame`, not `bounds`.** The first end-to-end run found that `bounds` shifted, or clamped onto the other display, a window that started on a secondary screen. `frame`, in AppKit global coordinates, was exact from either display. So:
+   - `Placement.terminal` is in AppKit coordinates, and `placement(...)` lost its `primaryHeight` parameter;
+   - `landed(_:near:primaryHeight:)` converts the window server's top-left frame;
+   - `prepare(... frame:)` writes a `frame` file through `frameEdges(_:)`;
+   - the runner sets `frame` twice, a second apart;
+   - `confirmPlaced` looks up to four times;
+   - CL-01 to CL-07 were rewritten for AppKit coordinates, and CL-08 was added.
+4. **Frame restore after a restart.** Crook recentres its window at launch, so a reattached session compares only the size it set (`ClaudeSession.reattached`).
+5. **End-to-end self-test.** It lives behind `#if CROOK_E2E` in `SessionController.swift`, with `CROOK_SWIFT_FLAGS` added to `build.sh` and `scripts/e2e-claude.py` as the driver. The shipped binary contains none of it (checked with `strings`). Results are in spec §14.1.

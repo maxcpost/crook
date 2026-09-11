@@ -1,8 +1,8 @@
 # Edit with Claude — design spec
 
-**Status:** Draft for review · 2026-09-11
+**Status:** Approved and implemented · 2026-09-11 (Crook 0.3.0)
 **Feature:** A button that opens Claude Code in Terminal, already pointed at the file open in Crook, so a person can change the file by describing the change.
-**Target:** the release after Crook 0.2.0
+**Target:** Crook 0.3.0
 
 ---
 
@@ -35,7 +35,7 @@ Good looks like this:
 | Files on another Mac | Supported in the first version | Friends use Crook both locally and over SSH |
 | Name | **Edit with Claude** | It opens Claude Code specifically, and only works if Claude Code is installed |
 
-This spec makes seven further decisions that need your confirmation. They're collected in §15.
+This spec made seven further decisions, listed in §15; all were approved with the spec.
 
 ## 4. Principles
 
@@ -145,7 +145,7 @@ When every check passes, Crook saves the **baseline**, the exact bytes on disk a
 
 Window moves animate unless Reduce Motion is on.
 
-How it's done (check S2): the runner inside the new Terminal window sets its own window's bounds through `osascript`. Terminal is then talking to itself, so macOS asks for no permission. Crook moves or narrows its own window only after it has read Terminal's actual frame back through `CGWindowListCopyWindowInfo` and found it where it asked. If Terminal isn't there, neither window moves. The runner leaves a window alone if it holds more than one tab, because the person's Terminal is set to open new work in tabs and that window isn't the runner's to move.
+How it's done (check S2): the runner inside the new Terminal window sets its own window's `frame` (AppKit global coordinates: left, bottom, right, top) through `osascript`, then sets it again a second later, because Terminal still repositions a brand-new window in that first moment. It uses `frame` rather than `bounds`: on a Mac with two displays, `bounds` is converted through whichever screen the window starts on, and landed windows on the wrong display. Terminal is then talking to itself, so macOS asks for no permission. Crook moves or narrows its own window only after it has read Terminal's actual frame back through `CGWindowListCopyWindowInfo` and found it where it asked. If Terminal isn't there, neither window moves. The runner leaves a window alone if it holds more than one tab, because the person's Terminal is set to open new work in tabs and that window isn't the runner's to move.
 
 **What the person sees in Terminal:**
 
@@ -204,7 +204,7 @@ Closing the Terminal window automatically depends on check S3. If that fails, th
 
 **Then Crook:**
 1. leaves watch mode, so the editor is editable again;
-2. restores its window frame, if it moved and the person hasn't moved or resized it since;
+2. restores its window frame, if it moved and the person hasn't moved or resized it since. For a session picked up after Crook restarted, only the size is compared, because Crook recentres its window at launch;
 3. refreshes the sidebar;
 4. shows the end banner.
 
@@ -447,7 +447,8 @@ Each session gets `~/Library/Caches/Crook/sessions/<uuid>/`, with permissions 07
 
 | File | Written by | Holds |
 |---|---|---|
-| `session.json` | Crook | File path, machine id and name, working folder, start time, Crook's window frame before moving, and whether the pre-approval rule was used |
+| `session.json` | Crook | File path, machine id and name, working folder, start time, Crook's window frame before and after making room, the nearby files' fingerprints, and the outcome |
+| `frame` | Crook | Where Terminal should go: left, bottom, right, top, in AppKit global coordinates |
 | `baseline` | Crook | The file's exact bytes at the start |
 | `final` | Crook | The file's exact bytes at the end, for Redo |
 | `payload` | Crook | The argument lists, separated by NUL characters |
@@ -466,7 +467,7 @@ Crook calls `NSWorkspace.open(_:withApplicationAt:configuration:)` with `launch.
 One static zsh script, identical for every session. It:
 
 1. **Records itself.** It finds its session folder from its own path and writes its process ID to `runner.pid`. When Crook reattaches after a restart, it identifies the runner by that process's arguments (`sysctl KERN_PROCARGS2`), which name this session's `launch.command`. A reused process ID can't match that.
-2. **Places its window.** It asks Terminal, through `osascript` and `window.applescript`, for the ID of the window whose busy tab is on its own tty, and writes that ID to `window`. If Crook asked for a position, it sets that window's bounds (check S2). A window with more than one tab is left alone. The AppleScript window ID is the same number `CGWindowListCopyWindowInfo` reports, which is how Crook confirms the move landed.
+2. **Places its window.** It asks Terminal, through `osascript` and `window.applescript`, for the ID of the window whose busy tab is on its own tty, and writes that ID to `window`. If Crook asked for a position, it sets that window's `frame` twice, a second apart (check S2). A window with more than one tab is left alone. The AppleScript window ID is the same number `CGWindowListCopyWindowInfo` reports, which is how Crook confirms the move landed.
 3. **Gets ready to run Claude Code.**
    - **This Mac:** it changes into the working folder and lists it, which is where a macOS folder permission denial shows up (exit reason `folder-access`). It then finds `claude` on the person's own PATH, which comes from the login shell Terminal started. If that fails, it uses the path Crook found during the checks.
    - **Another Mac:** it runs `/usr/bin/ssh -t <Crook's connection options> <host> <remote command>`.
@@ -628,13 +629,28 @@ These ran on 11 September 2026: macOS 26.6.2, Claude Code 2.1.268, a built-in di
 | # | What was checked | Result | What the design does |
 |---|---|---|---|
 | S1 | Opening a `.command` with Terminal through `NSWorkspace.open(_:withApplicationAt:configuration:)` | **Pass.** The runner starts about 1.3 s after the open, with no dialog. | As designed. |
-| S2 | xterm move and resize sequences | **Fail.** Pixel resize (`CSI 4 t`) is ignored. Move (`CSI 3 t`) is relative to whichever screen the window is on. Character resize (`CSI 8 t`) works but doesn't help. | The runner sets its own bounds through `osascript`, with no prompt. That was exact on the second display. On the built-in display, macOS moved one test window to the top of the visible area, so Crook reads the frame back and only moves itself when Terminal is where it asked. |
+| S2 | Placing Terminal's window | **xterm sequences fail.** Pixel resize (`CSI 4 t`) is ignored, move (`CSI 3 t`) is relative to whichever screen the window is on, and character resize (`CSI 8 t`) doesn't help. **AppleScript `bounds` fails across displays:** the same target landed exactly from the built-in display but was shifted, or clamped onto the other display, from the ultrawide. **AppleScript `frame` passes.** Given AppKit global coordinates, it landed exactly from either display, with no prompt. | The runner sets `frame` twice, a second apart. Crook reads the frame back through CGWindowList and only moves itself once Terminal is where it asked. |
 | S3 | The runner closing its own window | **Pass, by window ID rather than tty.** A finished window keeps reporting its old tty, and the pty is then reused, so tty isn't a unique key. | Find the window by busy tty at start, close it by ID at the end, in a detached `setsid` `osascript` that waits for the tab to go idle. |
 | S4 | Interactive flags | **Pass.** The appended system prompt is applied. The first message after `--` is sent automatically, after the trust question is answered Yes. `--name` sets the Terminal title. `--permission-mode default` (and `manual`) override a project's `acceptEdits`. `Edit(//path)` approves exactly that file, symlinked paths included. The trust question defaults to **No, exit**, and choosing it exits with 1 in 0.3 s. | Minimum version 2.1.268. First-time copy names the choice. A‑10 covers a declined trust question. |
 | S5 | Ending Claude Code | **Pass.** SIGTERM exits with 143 in 0.7 s, `/exit` exits with 0, Ctrl‑C twice exits with 0. A session at the trust question ignored SIGTERM. Transcripts weren't written when the session ran nested inside another Claude Code session, so resuming isn't promised anywhere in the UI. | SIGTERM, then SIGKILL after 3 s. |
 | S6 | Terminal's ssh joining Crook's connection | **Pass.** With no usable key, `ssh -t` joined the master ("Shared connection … closed") and kept running after Crook's long-lived client was killed. | As designed. |
 | S7 | Finding `claude` over ssh | **Pass.** A non-login shell over ssh doesn't have it on PATH. `$SHELL -lic 'command -v claude'` finds `~/.local/bin/claude`. | As designed, with the known-locations fallback. |
 | S8 | A macOS folder permission denial | **Not run.** Simulating a TCC denial would mean resetting Terminal's real privacy grants. | Exit 92 covers any failure to list the folder. Tested with a folder that has no read permission. |
+
+---
+
+### 14.1 End to end, in the real app
+
+A build compiled with `-D CROOK_E2E` drives a real session on its own (`scripts/e2e-claude.py`): the popover, the checks, Terminal, a real Claude Code, the reload, an ending, then review, Undo, Redo and Done. It photographs only Crook's and Terminal's windows. Every run was on 11 September 2026, against a scratch file:
+
+| Scenario | Result |
+|---|---|
+| End Session | The popover, then checks, then opening, then running in 1.6 s. Claude received the first message with its line range, edited without a prompt, and ended with the one-line `/exit` reminder from Crook's appended prompt. Crook highlighted exactly lines 5, 7, 8 and 9 and showed +4 −4. Typing and `insertText` while read-only never reached the buffer, and the nudge showed. End Session finished in 0.7 s and Terminal's window closed. Undo restored the baseline bytes exactly; Redo restored Claude's. Done removed the session folder. |
+| Crook makes room, then `/exit` | The first run found the `bounds` problem (S2): Terminal landed 187 pt off, so Crook correctly didn't move. After the switch to `frame`, Terminal landed exactly on its plan, and Crook narrowed from 3300 to 2880 pt. `/exit` ended the session as finished, Terminal closed, and Crook's frame was restored. |
+| Quit Crook mid-session, relaunch | The runner kept going in Terminal. The relaunched Crook found the session running and read-only, ended it, and reviewed it. Its frame was restored once the size-only comparison for reattached sessions was added. |
+| Another Mac (localhost sshd, throwaway key, real ssh and Claude Code) | Terminal's ssh joined the shared connection. The remote runner found `claude` through the login shell and ran it in the project folder. Claude made exactly the requested change. End Session stopped ssh (exit 255, counted as finished) and Terminal closed. |
+
+Not run for real, and covered by unit tests plus the copy: the failure alerts (not installed, too old, folder access, closed without changes), because each needs a broken machine to trigger honestly; and a session on `mac-mini` through the Crook UI, which wasn't reachable that day.
 
 ---
 
