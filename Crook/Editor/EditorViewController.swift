@@ -256,6 +256,11 @@ final class EditorViewController: NSViewController, WKUIDelegate {
 
     func pulseBanner() { banner.pulse() }
 
+    #if CROOK_E2E
+    /// Which button objects the banner is showing, to tell an update from a rebuild.
+    var e2eBannerButtons: [ObjectIdentifier] { banner.e2eButtons }
+    #endif
+
 
 
     func focusEditor() {

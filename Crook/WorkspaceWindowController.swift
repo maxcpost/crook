@@ -314,8 +314,11 @@ final class WorkspaceWindowController: NSWindowController {
 
     func retarget(to url: URL) {
         guard !isRetargeting else { return }
-        let current = (document as? CrookDocument)?.fileURL
-        guard current != url else { editor.focusEditor(); return }
+        // What the editor shows, not what the window last held: closing the
+        // window with its red button detaches the document but leaves it here,
+        // and clicking that same file afterwards did nothing at all.
+        let showing = (document as? CrookDocument).flatMap { editor.owner === $0 ? $0 : nil }
+        guard showing?.fileURL != url else { editor.focusEditor(); return }
 
         isRetargeting = true
 
@@ -377,7 +380,7 @@ final class WorkspaceWindowController: NSWindowController {
                 return
             }
             guard let next = doc as? CrookDocument else { return }
-            guard next !== self.document as? CrookDocument else { return }
+            guard next !== self.document as? CrookDocument || self.editor.owner !== next else { return }
             self.install(next, at: url)
         }
     }
@@ -529,7 +532,7 @@ final class WorkspaceWindowController: NSWindowController {
         doc.reloadFromDisk()
         let after = doc.currentText()
 
-        if sessions.changeLanded(url: url, before: before, after: after) {
+        if sessions.changeLanded(url: url, before: before, after: after, disk: data) {
             // Watch mode highlights precisely; the proxy icon still carries
             // the net line change.
             lastDelta = LineDiff.between(before, after)?.delta ?? 0

@@ -226,20 +226,41 @@ final class SessionRegistry {
         s.state = .stopping
         save(s)
         onChange?(s)
-        guard let target = Self.readPID(s.file("child.pid")) ?? s.record.runnerPID else { return }
+        guard let runner = s.record.runnerPID else { return }
+        // Claude Code (or ssh), if the runner has started it; the runner itself
+        // otherwise. Only ever a process that is still demonstrably this
+        // session's: the runner's own child, or the runner.
+        let child = Self.readPID(s.file("child.pid")).flatMap { Self.parentPID(of: $0) == runner ? $0 : nil }
+        let target = child ?? runner
+        guard Self.stillOurs(target, runner: runner, folder: s.folder) else { return }
         kill(target, SIGTERM)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            guard s.state == .stopping else { return }
+            guard s.state == .stopping, Self.stillOurs(target, runner: runner, folder: s.folder) else { return }
             kill(target, SIGKILL)
         }
     }
 
+    private static func stillOurs(_ pid: Int32, runner: Int32, folder: URL) -> Bool {
+        pid == runner ? isRunner(pid: runner, of: folder) : parentPID(of: pid) == runner
+    }
+
     /// Done: forget the session, folder and all.
-    func discard(_ s: ClaudeSession) {
+    ///
+    /// `deletingFolderAfter` keeps the folder a little longer. A runner that
+    /// just exited is still closing its Terminal window, and the script that
+    /// does it is read from this folder.
+    func discard(_ s: ClaudeSession, deletingFolderAfter delay: TimeInterval = 0) {
         startTimers.removeValue(forKey: s.id)?.invalidate()
         exitSources.removeValue(forKey: s.id)?.cancel()
         sessions.removeAll { $0 === s }
-        try? FileManager.default.removeItem(at: s.folder)
+        let folder = s.folder
+        guard delay > 0 else {
+            try? FileManager.default.removeItem(at: folder)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            try? FileManager.default.removeItem(at: folder)
+        }
     }
 
     // MARK: - after a restart
@@ -296,6 +317,16 @@ final class SessionRegistry {
     static func readPID(_ url: URL) -> Int32? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// A process's parent, from the kernel.
+    static func parentPID(of pid: Int32) -> Int32? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
     }
 
     /// Whether `pid` is alive and running this folder's launch.command.

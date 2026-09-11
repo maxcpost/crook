@@ -22,9 +22,12 @@ enum ClaudePreflight {
     /// Where the installers put it: the native installer, Homebrew on either
     /// architecture, and the old per-user npm location.
     static func knownLocations(home: String) -> [String] {
-        [home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-         home + "/.claude/local/claude"]
+        [home + "/.local/bin/claude"] + systemLocations + [home + "/.claude/local/claude"]
     }
+
+    /// Homebrew's two prefixes. A variable so the tests can set a machine's own
+    /// install aside and exercise the not-installed path on any Mac.
+    nonisolated(unsafe) static var systemLocations = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
 
     /// `claude --version` prints "2.1.268 (Claude Code)".
     static func version(from output: String) -> String? {
@@ -75,7 +78,7 @@ enum ClaudePreflight {
             }
         }
         guard let path else { return .missing }
-        let result = judge(path: path, versionOutput: run(path, ["--version"], timeout: 8))
+        let result = judge(path: path, versionOutput: run(path, ["--version"], timeout: 4))
         if case .ready(let p, let v) = result {
             cacheLock.lock(); cached = (p, v); cacheLock.unlock()
         }

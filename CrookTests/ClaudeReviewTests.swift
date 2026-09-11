@@ -71,10 +71,18 @@ enum ClaudeReviewTests {
              SessionCopy.banner(facts(.ended(.closedWithoutChanges))) == nil
              && SessionCopy.banner(facts(.ended(.claudeMissing))) == nil)
         T.eq("CV-17  Undo is only offered while the disk still holds Claude's version",
-             SessionCopy.swapAvailability(verb: "undo", fileVanished: false, connected: true, machine: nil, diskMatches: false),
+             SessionCopy.swapAvailability(verb: "undo", haveVersion: true, fileVanished: false, connected: true, machine: nil, diskMatches: false),
              .unavailable("This file has changed since the session ended."))
         T.ok("CV-18  and never for a file that moved",
-             SessionCopy.swapAvailability(verb: "undo", fileVanished: true, connected: true, machine: nil, diskMatches: true) == nil)
+             SessionCopy.swapAvailability(verb: "undo", haveVersion: true, fileVanished: true, connected: true, machine: nil, diskMatches: true) == nil)
+        T.ok("CV-30  nor when Crook never saw Claude's version, as after a session that ended while Crook was closed",
+             SessionCopy.swapAvailability(verb: "undo", haveVersion: false, fileVanished: false, connected: true, machine: nil, diskMatches: true) == nil)
+        T.eq("CV-31  a reload that failed says so, and keeps the edits",
+             SessionCopy.couldNotReadDisk(fileName: "SKILL.md").title, "Couldn't read SKILL.md from disk.")
+        T.eq("CV-32  VoiceOver hears a range for neighbouring lines",
+             SessionCopy.changedAnnouncement([5, 6, 7]), "Claude changed lines 5 to 7.")
+        T.eq("CV-33  and a count for scattered ones, not a range that sounds like everything between",
+             SessionCopy.changedAnnouncement([3, 80]), "Claude changed 2 lines.")
 
         T.suite("claude-review — the alerts say")
         T.eq("CV-19  missing on this Mac", SessionCopy.missing(machine: nil).title, "Claude Code isn't installed on this Mac.")

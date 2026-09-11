@@ -103,6 +103,10 @@ class CrookDocument: NSDocument {
     /// "changed by another application" sheet when the person has chosen
     /// their version over one on disk.
     func saveBeforeSession() -> Bool {
+        // The last keystrokes reach Swift a frame after they are typed. Take
+        // them now: arriving after the editor goes read-only, they would start
+        // the session with unsaved edits and a conflict.
+        if let b = editor?.bridge, editor?.owner === self { b.flushPendingEdits() }
         guard isDocumentEdited else { return true }
         if remoteProviderID != nil {
             let outcome = saveRemote()
@@ -324,9 +328,12 @@ class CrookDocument: NSDocument {
     /// Called when this document loses the shared editor. Its text is captured
     /// so a later save writes what the user actually had, not the next file.
     func detachFromEditor() {
-        if let b = self.editor?.bridge, self.editor?.owner === self {
-            loadedText = NSMutableString(string: b.text as String)
-            loadedProfile = b.profile
+        if let editor = self.editor, editor.owner === self {
+            loadedText = NSMutableString(string: editor.bridge.text as String)
+            loadedProfile = editor.bridge.profile
+            // Nobody owns the editor now. Left pointing here, it said this
+            // document was on screen while the window showed the empty state.
+            editor.owner = nil
         }
         self.editor = nil
     }

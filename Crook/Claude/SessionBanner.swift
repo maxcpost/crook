@@ -79,6 +79,7 @@ final class SessionBanner: NSView {
 
     func apply(_ c: BannerContent) {
         guard c != content else { return }
+        let previous = content
         content = c
         titleLabel.stringValue = c.title
         noteLabel.stringValue = c.note ?? ""
@@ -86,23 +87,40 @@ final class SessionBanner: NSView {
         dot.color = Self.dotColor(c.tone)
         setAccessibilityLabel([c.title, c.note].compactMap { $0 }.joined(separator: ". "))
 
-        buttonRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for b in c.buttons {
-            let button = NSButton(title: b.title, target: self, action: #selector(tapped(_:)))
-            button.bezelStyle = .push
-            button.controlSize = .small
-            button.font = .systemFont(ofSize: 11)
-            button.isEnabled = b.enabled
-            button.toolTip = b.help
-            button.tag = Self.actions.firstIndex(of: b.action) ?? 0
-            buttonRow.addArrangedSubview(button)
+        // The note changes with every edit Claude makes. Buttons rebuilt then
+        // would drop a click in progress and VoiceOver's place, so the same
+        // buttons stay and only what they say about themselves is updated.
+        let existing = buttonRow.arrangedSubviews.compactMap { $0 as? NSButton }
+        if previous?.buttons.map(\.action) == c.buttons.map(\.action),
+           previous?.buttons.map(\.title) == c.buttons.map(\.title), existing.count == c.buttons.count {
+            for (button, b) in zip(existing, c.buttons) {
+                button.isEnabled = b.enabled
+                button.toolTip = b.help
+            }
+        } else {
+            buttonRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for b in c.buttons {
+                let button = NSButton(title: b.title, target: self, action: #selector(tapped(_:)))
+                button.bezelStyle = .push
+                button.controlSize = .small
+                button.font = .systemFont(ofSize: 11)
+                button.isEnabled = b.enabled
+                button.toolTip = b.help
+                button.tag = Self.actions.firstIndex(of: b.action) ?? 0
+                buttonRow.addArrangedSubview(button)
+            }
         }
 
+        if previous?.alsoChanged != c.alsoChanged { showAlsoChanged(c.alsoChanged) }
+        needsDisplay = true
+    }
+
+    private func showAlsoChanged(_ paths: [String]) {
         alsoRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        alsoRow.isHidden = c.alsoChanged.isEmpty
-        if !c.alsoChanged.isEmpty {
+        alsoRow.isHidden = paths.isEmpty
+        if !paths.isEmpty {
             alsoRow.addArrangedSubview(Self.small("Also changed during the session:"))
-            let shown = Array(c.alsoChanged.prefix(3))
+            let shown = Array(paths.prefix(3))
             for (i, path) in shown.enumerated() {
                 let link = NSButton(title: path, target: self, action: #selector(openFile(_:)))
                 link.isBordered = false
@@ -112,9 +130,8 @@ final class SessionBanner: NSView {
                 alsoRow.addArrangedSubview(link)
                 if i < shown.count - 1 { alsoRow.addArrangedSubview(Self.small(",")) }
             }
-            if c.alsoChanged.count > 3 { alsoRow.addArrangedSubview(Self.small("and \(c.alsoChanged.count - 3) more")) }
+            if paths.count > 3 { alsoRow.addArrangedSubview(Self.small("and \(paths.count - 3) more")) }
         }
-        needsDisplay = true
     }
 
     /// Someone tried to type: draw the eye here, once, unless motion is reduced.
@@ -140,6 +157,10 @@ final class SessionBanner: NSView {
     }
 
     @objc private func openFile(_ sender: NSButton) { onOpenFile?(sender.title) }
+
+    #if CROOK_E2E
+    var e2eButtons: [ObjectIdentifier] { buttonRow.arrangedSubviews.map(ObjectIdentifier.init) }
+    #endif
 
     private static func small(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)

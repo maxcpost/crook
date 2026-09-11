@@ -55,10 +55,12 @@ enum ClaudePreflightTests {
 
         try? fm.removeItem(atPath: installed)
         ClaudePreflight.forgetCachedInstall()
-        if ClaudePreflight.knownLocations(home: home.path).contains(where: { fm.isExecutableFile(atPath: $0) }) {
-            T.skip("CF-09  nothing anywhere is missing", "Claude Code is installed system-wide on this machine")
-            T.skip("CF-10  a login shell that hangs is given up on", "Claude Code is installed system-wide on this machine")
-        } else {
+        // This Mac's own Homebrew or /usr/local install would otherwise
+        // answer for the fake home; set them aside for these two.
+        let systemLocations = ClaudePreflight.systemLocations
+        ClaudePreflight.systemLocations = []
+        defer { ClaudePreflight.systemLocations = systemLocations }
+        do {
             T.eq("CF-09  nothing anywhere is missing",
                  ClaudePreflight.checkLocal(home: home.path, loginShell: silentShell.path), .missing)
             let hanging = script("hanging-shell", "#!/bin/sh\nsleep 30\n")

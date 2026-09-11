@@ -16,6 +16,7 @@ final class ClaudeButton: NSTitlebarAccessoryViewController {
 
     private let button = NSButton()
     private let spinner = NSProgressIndicator()
+    private let stack = NSStackView()
 
     /// What the popover hangs from.
     var anchor: NSView { button }
@@ -31,12 +32,13 @@ final class ClaudeButton: NSTitlebarAccessoryViewController {
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
 
-        let stack = NSStackView(views: [spinner, button])
+        stack.addArrangedSubview(spinner)
+        stack.addArrangedSubview(button)
         stack.orientation = .horizontal
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 176, height: 28))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 140, height: 28))
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
@@ -98,6 +100,13 @@ final class ClaudeButton: NSTitlebarAccessoryViewController {
         button.toolTip = showTitle ? help : "\(title) — \(help)"
         button.setAccessibilityLabel(title)
         button.isEnabled = mode == .idle || mode == .running
+        spinner.isHidden = mode != .opening
         if mode == .opening { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+
+        // As wide as what it says, so a narrow window's title keeps the room
+        // a fixed width would have taken.
+        stack.layoutSubtreeIfNeeded()
+        let width = ceil(stack.fittingSize.width) + 14
+        if abs(view.frame.width - width) > 0.5 { view.setFrameSize(NSSize(width: width, height: 28)) }
     }
 }

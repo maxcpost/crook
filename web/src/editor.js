@@ -449,12 +449,17 @@ const bridge = ViewPlugin.fromClass(class {
 // happened rather than the editor silently ignoring keys.
 const readOnlyConf = new Compartment()
 let readOnly = false
-let lastWheel = 0
+let lastScroll = 0
 
 function reportAttempt() { post({ type: "readOnlyAttempt" }) }
 
+// Keys that move the reader through the document count as scrolling, as the
+// wheel does: a change landing then should not drag them somewhere else.
+const NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "])
+
 const readOnlyGuard = EditorView.domEventHandlers({
   keydown(e) {
+    if (NAVIGATION_KEYS.has(e.key)) lastScroll = Date.now()
     if (!readOnly) return false
     if (e.metaKey || e.ctrlKey) {
       const k = (e.key || "").toLowerCase()
@@ -486,7 +491,12 @@ const readOnlyGuard = EditorView.domEventHandlers({
     return true
   },
   wheel() {
-    lastWheel = Date.now()
+    lastScroll = Date.now()
+    return false
+  },
+  mousedown(e) {
+    // Grabbing the scroller is scrolling too.
+    if (e.target === view.scrollDOM) lastScroll = Date.now()
     return false
   },
 })
@@ -500,19 +510,21 @@ function setReadOnly(on) {
   })
 }
 
-/// Bring a line Claude just changed into view — unless the reader is
-/// scrolling, or can already see it. Following along should never mean being
-/// dragged away from what you were reading.
-function scrollToLine(n) {
-  if (!view) return
-  if (Date.now() - lastWheel < 3000) return
+/// Bring the lines Claude just changed into view — unless the reader is
+/// scrolling, or can already see one of them. Following along should never
+/// mean being dragged away from what you were reading.
+function scrollToLines(lines) {
+  if (!view || !lines || !lines.length) return
+  if (Date.now() - lastScroll < 3000) return
   const doc = view.state.doc
-  const line = doc.line(Math.max(1, Math.min(n | 0, doc.lines)))
   const box = view.scrollDOM.getBoundingClientRect()
-  const at = view.coordsAtPos(line.from)
-  if (at && at.top >= box.top && at.bottom <= box.bottom) return
+  const clamp = (n) => doc.line(Math.max(1, Math.min(n | 0, doc.lines)))
+  for (const n of lines) {
+    const at = view.coordsAtPos(clamp(n).from)
+    if (at && at.top >= box.top && at.bottom <= box.bottom) return
+  }
   view.dispatch({
-    effects: EditorView.scrollIntoView(line.from, { y: "start", yMargin: Math.round(view.scrollDOM.clientHeight / 3) }),
+    effects: EditorView.scrollIntoView(clamp(lines[0]).from, { y: "start", yMargin: Math.round(view.scrollDOM.clientHeight / 3) }),
     annotations: [fromSwift.of(true)],
   })
 }
@@ -791,4 +803,4 @@ function boot() {
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot)
 else boot()
 
-export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, flushNow, setScale, zoomIn, zoomOut, zoomReset, setReadOnly, scrollToLine }
+export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, flushNow, setScale, zoomIn, zoomOut, zoomReset, setReadOnly, scrollToLines }

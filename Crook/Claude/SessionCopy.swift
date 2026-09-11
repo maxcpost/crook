@@ -147,9 +147,14 @@ enum SessionCopy {
 
     /// Whether Undo or Redo can run right now, why not, or nil when it should
     /// not be offered at all.
-    static func swapAvailability(verb: String, fileVanished: Bool, connected: Bool,
+    ///
+    /// `haveVersion` is whether Crook knows Claude's version of the file at
+    /// all: the last one it saw land, or the disk as it watched the session
+    /// end. A session that ended while Crook was closed may have been edited
+    /// since, and offering Undo there would put the baseline over those edits.
+    static func swapAvailability(verb: String, haveVersion: Bool, fileVanished: Bool, connected: Bool,
                                  machine: String?, diskMatches: Bool) -> Availability? {
-        if fileVanished { return nil }
+        if !haveVersion || fileVanished { return nil }
         if !connected { return .unavailable("Reconnect to \(machine ?? "that Mac") to \(verb).") }
         return diskMatches ? .available : .unavailable("This file has changed since the session ended.")
     }
@@ -158,9 +163,13 @@ enum SessionCopy {
 
     static let startedAnnouncement = "Claude Code is open in Terminal."
 
+    /// A range only when the lines are neighbours. "Lines 3 to 80" for a
+    /// two-line rename sounds like everything in between changed.
     static func changedAnnouncement(_ lines: [Int]) -> String {
         guard let first = lines.first, let last = lines.last else { return "" }
-        return first == last ? "Claude changed line \(first)." : "Claude changed lines \(first) to \(last)."
+        if first == last { return "Claude changed line \(first)." }
+        if last - first + 1 == lines.count { return "Claude changed lines \(first) to \(last)." }
+        return "Claude changed \(lines.count) lines."
     }
 
     static func endedAnnouncement(added: Int, removed: Int) -> String {
@@ -236,6 +245,14 @@ enum SessionCopy {
     static func couldNotConnect(machine: String?) -> Alert {
         Alert(title: "Couldn't reach \(machine ?? "that Mac") from Terminal.",
               message: "ssh reported a problem, and Terminal shows what it said. Check that Crook is still connected, then try again.",
+              buttons: ["OK"])
+    }
+
+    /// "Use Disk Version" could not read the disk. The edits are still there,
+    /// and nothing was written.
+    static func couldNotReadDisk(fileName: String) -> Alert {
+        Alert(title: "Couldn't read \(fileName) from disk.",
+              message: "Your edits are still here. Try again, or choose Use My Version.",
               buttons: ["OK"])
     }
 

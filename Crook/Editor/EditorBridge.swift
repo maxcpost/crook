@@ -172,9 +172,11 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
                                in: nil, in: .page) { _ in }
     }
 
-    func revealLine(_ line: Int) {
-        guard isReady, let wv = webView else { return }
-        wv.callAsyncJavaScript("CrookEditor.scrollToLine(n);", arguments: ["n": line],
+    /// Bring changed lines into view, unless one is already visible or the
+    /// reader is scrolling.
+    func reveal(lines: [Int]) {
+        guard isReady, let wv = webView, !lines.isEmpty else { return }
+        wv.callAsyncJavaScript("CrookEditor.scrollToLines(l);", arguments: ["l": lines],
                                in: nil, in: .page) { _ in }
     }
 

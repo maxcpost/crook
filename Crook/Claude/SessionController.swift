@@ -45,7 +45,13 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
     // MARK: - the open file
 
-    private var document: CrookDocument? { wc.document as? CrookDocument }
+    /// The document the editor is showing. A window closed with its red
+    /// button keeps `document` set while showing the empty state; only the
+    /// editor's owner says what is really on screen.
+    private var document: CrookDocument? {
+        guard let doc = wc.document as? CrookDocument, wc.editor.owner === doc else { return nil }
+        return doc
+    }
 
     private func providerID(of doc: CrookDocument) -> String {
         doc.remoteProviderID ?? Providers.local.id
@@ -104,11 +110,12 @@ final class SessionController: NSObject, NSPopoverDelegate {
         // What is on screen, as bytes, when nothing is unsaved. Undo and Redo
         // are offered only while it is exactly the version they replace.
         let onScreen = doc.isDocumentEdited ? nil : try? wc.editor.bridge.data()
-        let undo = SessionCopy.swapAvailability(verb: "undo", fileVanished: s.fileVanished, connected: connected,
-                                                machine: s.record.machineName,
-                                                diskMatches: onScreen != nil && onScreen == s.finalBytes)
-        let redo = SessionCopy.swapAvailability(verb: "redo", fileVanished: s.fileVanished, connected: connected,
-                                                machine: s.record.machineName,
+        let final = s.finalBytes
+        let undo = SessionCopy.swapAvailability(verb: "undo", haveVersion: final != nil, fileVanished: s.fileVanished,
+                                                connected: connected, machine: s.record.machineName,
+                                                diskMatches: onScreen != nil && onScreen == final)
+        let redo = SessionCopy.swapAvailability(verb: "redo", haveVersion: final != nil, fileVanished: s.fileVanished,
+                                                connected: connected, machine: s.record.machineName,
                                                 diskMatches: onScreen != nil && onScreen == s.baseline)
         let nearby = s.record.alsoChanged.map { SessionPlan.relativePath($0, from: s.record.workingDirectory) }
         return SessionCopy.banner(.init(state: s.state, added: tally.added, removed: tally.removed,
@@ -250,12 +257,20 @@ final class SessionController: NSObject, NSPopoverDelegate {
         alert.messageText = copy.title
         alert.informativeText = copy.message
         copy.buttons.forEach { alert.addButton(withTitle: $0) }
-        let decide: (NSApplication.ModalResponse) -> Void = { response in
+        let decide: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return done(false) }
             switch response {
             case .alertFirstButtonReturn:
                 done(true)   // saveBeforeSession writes the buffer over the disk copy
             case .alertSecondButtonReturn:
                 doc.reloadFromDiskDiscardingEdits(nil)
+                // A reload that could not read the disk leaves the edits in
+                // place, and the save that follows would then overwrite the
+                // very version the person chose to keep.
+                guard !doc.isDocumentEdited else {
+                    self.present(SessionCopy.couldNotReadDisk(fileName: url.lastPathComponent))
+                    return done(false)
+                }
                 done(true)
             default:
                 done(false)
@@ -415,18 +430,23 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
     /// A write landed in the open file. True when the file is in watch mode and
     /// this has taken over highlighting it.
-    func changeLanded(url: URL, before: String, after: String) -> Bool {
+    func changeLanded(url: URL, before: String, after: String, disk: Data) -> Bool {
         guard let doc = document, doc.fileURL == url, let s = session(for: doc), s.isLive else { return false }
         s.fileVanished = false
         let lines = SessionReview.changedLines(before: before, after: after)
         #if CROOK_E2E
         e2eChanged(lines)
         #endif
-        if let first = lines.first {
+        if !lines.isEmpty {
             wc.editor.bridge.pushChangedLines(lines)
-            wc.editor.bridge.revealLine(first)
+            wc.editor.bridge.reveal(lines: lines)
             announce(SessionCopy.changedAnnouncement(lines))
         }
+        // Claude's version as it landed, byte for byte, so Undo still has
+        // something true to offer if the session ends where Crook cannot read
+        // the disk — a lost connection, or Crook closed. Replace checks the
+        // disk still holds it.
+        try? disk.write(to: s.file("final"), options: .atomic)
         refresh()
         return true
     }
@@ -465,7 +485,9 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
         let protected = s.isRemote ? nil : SessionReview.protectedFolder(for: s.record.workingDirectory, home: Paths.home)
         if let alert = SessionCopy.alert(for: outcome, machine: s.record.machineName, protectedFolder: protected) {
-            registry.discard(s)
+            // The runner closes its Terminal window after it exits, reading
+            // the script to do it from this folder; give it a moment.
+            registry.discard(s, deletingFolderAfter: 10)
             // A failure from before Crook last quit is not news worth a sheet.
             guard !s.endedWhileAway else { return }
             present(alert) { [weak self] in
@@ -481,7 +503,10 @@ final class SessionController: NSObject, NSPopoverDelegate {
 
         if here && provider.isConnected {
             if let bytes = provider.contents(s.record.filePath) {
-                try? bytes.write(to: s.file("final"), options: .atomic)
+                // Only a session Crook watched end can say this is Claude's
+                // version. One that ended while Crook was closed may have been
+                // edited since; its last-seen version, if any, stays as it was.
+                if !s.endedWhileAway { try? bytes.write(to: s.file("final"), options: .atomic) }
             } else {
                 s.fileVanished = true
             }
@@ -490,10 +515,6 @@ final class SessionController: NSObject, NSPopoverDelegate {
         }
         registry.save(s)
 
-        // A window closed during the session comes back on this file.
-        if document == nil, here, !s.fileVanished, !s.endedWhileAway {
-            wc.retarget(to: url)
-        }
         if !s.endedWhileAway, let doc = document, doc.fileURL == url {
             let base = s.baseline.flatMap { try? ByteCodec.decode($0).0 as String } ?? ""
             let t = SessionReview.tally(baseline: base, current: doc.currentText())
@@ -690,8 +711,10 @@ final class SessionController: NSObject, NSPopoverDelegate {
 /// (`CROOK_E2E_END`: `session` for End Session, `exit` for the driver to type
 /// /exit, `quit` to quit Crook mid-session), then Undo, Redo and Done. With
 /// `CROOK_E2E_PHASE=reattach` it instead picks up a session left running by a
-/// `quit` run and ends it. Every step is a "Crook: E2E" log line; "E2E shot
-/// <name> <window ids>" asks the driver to photograph those windows only.
+/// `quit` run and ends it. `CROOK_E2E_REOPEN=1` closes the window once the
+/// session has ended and opens the file again before Undo. Every step is a
+/// "Crook: E2E" log line; "E2E shot <name> <window ids>" asks the driver to
+/// photograph those windows only.
 private final class E2E {
     static let shared = E2E()
     let env = ProcessInfo.processInfo.environment
@@ -701,6 +724,7 @@ private final class E2E {
     var session: ClaudeSession?
     var reviewed = false
     var watching = false
+    var reopened = false
 }
 
 extension SessionController {
@@ -793,7 +817,8 @@ extension SessionController {
         let s = doc.flatMap { session(for: $0) }
         let content = doc.flatMap { d in s.flatMap { banner(for: $0, doc: d) } }
         let shown = content.map { "\($0.title) | \($0.note ?? "-") | \($0.buttons.map { $0.enabled ? $0.title : "(\($0.title))" })" } ?? "none"
-        let note = "state=\(s.map { "\($0.state)" } ?? "none") starting=\(starting != nil) button=\(accessory.mode) banner=\(shown)"
+        let note = "state=\(s.map { "\($0.state)" } ?? "none") starting=\(starting != nil) button=\(accessory.mode) "
+            + "buttonWidth=\(Int(accessory.view.frame.width)) banner=\(shown)"
         guard note != E2E.shared.lastNote else { return }
         E2E.shared.lastNote = note
         e2e("note \(note)")
@@ -803,7 +828,22 @@ extension SessionController {
         guard e2eOn else { return }
         E2E.shared.changes += 1
         E2E.shared.lastChange = Date()
-        e2e("change lines=\(lines)")
+        let buttons = wc.editor.e2eBannerButtons
+        let scroller = "document.querySelector('.cm-scroller')"
+        let js = "(() => { const s = \(scroller); const box = s.getBoundingClientRect();"
+            + " const lit = [...document.querySelectorAll('.q-changed')].filter(l => { const r = l.getBoundingClientRect();"
+            + " return r.top >= box.top && r.bottom <= box.bottom }).length;"
+            + " return s.scrollTop + ' litVisible=' + lit })()"
+        wc.editor.bridge.webView?.evaluateJavaScript(js) { [weak self] before, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                guard let self else { return }
+                self.wc.editor.bridge.webView?.evaluateJavaScript(js) { after, _ in
+                    let now = self.wc.editor.e2eBannerButtons
+                    self.e2e("change lines=\(lines) scrollTop \(before ?? "?") -> \(after ?? "?") "
+                             + "sameBannerButtons=\(!buttons.isEmpty && buttons == now)")
+                }
+            }
+        }
     }
 
     func e2eSessionChanged(_ s: ClaudeSession) {
@@ -890,6 +930,22 @@ extension SessionController {
         e2eFrames("ended")
         e2eShot("ended")
         e2e("terminal-window-still-open=\(e2eTerminalWindow().flatMap { TerminalLauncher.frameOfWindow(number: $0) } != nil)")
+        guard E2E.shared.env["CROOK_E2E_REOPEN"] == nil || E2E.shared.reopened else {
+            E2E.shared.reopened = true
+            wc.window?.performClose(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                self.e2e("closed-window visible=\(self.wc.window?.isVisible == true) showing=\(self.document != nil) button=\(self.accessory.mode)")
+                self.wc.showWindow(nil)
+                self.wc.retarget(to: URL(fileURLWithPath: s.record.filePath))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    self.e2e("reopened showing=\(self.document != nil)")
+                    self.e2eShot("reopened")
+                    self.e2eReview(s)
+                }
+            }
+            return
+        }
         let final = s.finalBytes
         bannerAction(.undo)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in

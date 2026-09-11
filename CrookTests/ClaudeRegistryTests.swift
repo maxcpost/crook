@@ -98,6 +98,22 @@ enum ClaudeRegistryTests {
         T.ok("CG-12  and a runner that turns up late is told to stand down",
              fm.fileExists(atPath: never.file("abandoned").path))
 
+        let parentProbe = Process()
+        parentProbe.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        parentProbe.arguments = ["5"]
+        try? parentProbe.run()
+        T.eq("CG-20  a process's parent is read from the kernel, so a kill can check it is still ours",
+             SessionRegistry.parentPID(of: parentProbe.processIdentifier), getpid())
+        parentProbe.terminate()
+
+        guard let lingering = begin(registry, "/tmp/lingering.md") else { return }
+        registry.discard(lingering, deletingFolderAfter: 0.5)
+        T.ok("CG-21  a discarded session leaves the list at once, but its folder can outlive it briefly",
+             registry.session(for: "/tmp/lingering.md", providerID: "local") == nil
+             && fm.fileExists(atPath: lingering.folder.path))
+        T.ok("CG-22  so a runner closing its window can still read its script, then it is gone",
+             spin(3) { !fm.fileExists(atPath: lingering.folder.path) })
+
         registry.discard(s)
         T.ok("CG-13  Done forgets a session, folder and all",
              !fm.fileExists(atPath: s.folder.path)
