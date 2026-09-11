@@ -154,8 +154,28 @@ final class LocalProvider: FileProvider {
         FileManager.default.contents(atPath: path)
     }
 
+    /// Writes through a symlink to the file it names, keeping that file's
+    /// permissions and extended attributes.
+    ///
+    /// CLAUDE.md is often a link to AGENTS.md. A plain atomic write renames a
+    /// new file over the path it is given — the link itself — so the link
+    /// became a regular file and the two names silently diverged. Replacing
+    /// the resolved file keeps the link, and replaceItemAt carries the old
+    /// file's metadata over to the new bytes. The new bytes are staged in the
+    /// system's replacement directory for that volume, never in the project.
     func write(_ data: Data, to path: String) throws {
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        let fm = FileManager.default
+        let target = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard fm.fileExists(atPath: target.path) else {
+            try data.write(to: target, options: .atomic)
+            return
+        }
+        let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                 appropriateFor: target, create: true)
+        defer { try? fm.removeItem(at: staging) }
+        let staged = staging.appendingPathComponent(target.lastPathComponent)
+        try data.write(to: staged)
+        _ = try fm.replaceItemAt(target, withItemAt: staged)
     }
 
     func symlinkDestination(_ path: String) -> String? {

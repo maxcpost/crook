@@ -112,5 +112,25 @@ enum ClaudeReviewTests {
         let refused = (try? SessionReview.replace(path: path, on: local, expecting: claudes, with: baseline)) ?? true
         T.ok("CV-27  neither overwrites a version it did not expect",
              !refused && fm.contents(atPath: path) == someoneElse)
+
+        // CLAUDE.md -> AGENTS.md is a real pattern, and the one Crook already
+        // models for reach. An atomic write renames over the path it is given,
+        // which turns the link into a plain file and leaves the two names
+        // silently disagreeing.
+        let agents = dir.appendingPathComponent("AGENTS.md").path
+        let link = dir.appendingPathComponent("CLAUDE.md").path
+        try? claudes.write(to: URL(fileURLWithPath: agents))
+        try? fm.createSymbolicLink(atPath: link, withDestinationPath: "AGENTS.md")
+        try? fm.setAttributes([.posixPermissions: 0o640], ofItemAtPath: agents)
+        _ = agents.withCString { p in setxattr(p, "com.newvisiondevgrp.crook-test", "kept", 4, 0, 0) }
+        let throughLink = (try? SessionReview.replace(path: link, on: local, expecting: claudes, with: baseline)) ?? false
+        T.ok("CV-28  writing through a symlink keeps the link, and changes what it points at",
+             throughLink && (try? fm.destinationOfSymbolicLink(atPath: link)) == "AGENTS.md"
+             && fm.contents(atPath: agents) == baseline)
+        var tag = [UInt8](repeating: 0, count: 8)
+        let tagLength = agents.withCString { p in getxattr(p, "com.newvisiondevgrp.crook-test", &tag, tag.count, 0, 0) }
+        T.ok("CV-29  and keeps the file's permissions and extended attributes",
+             ((try? fm.attributesOfItem(atPath: agents))?[.posixPermissions] as? Int) == 0o640
+             && tagLength == 4 && String(decoding: tag.prefix(4), as: UTF8.self) == "kept")
     }
 }
