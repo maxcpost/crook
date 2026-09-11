@@ -108,11 +108,15 @@ appears in a dozen places, turn a section into a checklist, tighten a skill's
 description. Click **Edit with Claude** at the top right of the window, or
 press `⇧⌘E`.
 
+![Asking Claude to turn the release steps into a checklist, with those five lines of CLAUDE.md selected](Assets/screenshots/claude-ask.png)
+
 Say what you want in the box that appears — or leave it empty — and press
 Return. Crook opens Claude Code in Terminal, beside this window, already in the
 right folder and already told which file you mean. If you selected some lines
 first, it knows those too. Talk to Claude there. Every change it saves shows
 up in Crook straight away, highlighted.
+
+![Claude Code in Terminal beside Crook, which highlights the lines Claude just changed and counts them in its banner](Assets/screenshots/claude-working.png)
 
 While Claude has the file it's read-only in Crook, so the two of you never type
 over each other. When you're done, type `/exit` in Terminal, or click **End
@@ -121,6 +125,10 @@ front and says what changed: **Review Changes** shows the diff, and **Undo
 Changes** puts this file back exactly as it was before Claude started. Undo
 covers only this file — other files you let Claude change stay changed — and
 it stays on offer until you click **Done** or type in the file.
+
+![After the session: the banner offers Review Changes, Undo Changes and Done, and the changed lines stay marked](Assets/screenshots/claude-finished.png)
+
+![Review Changes: the lines Claude added and removed in this file](Assets/screenshots/claude-review.png)
 
 You need [Claude Code](https://code.claude.com/docs/en/setup) installed and a
 Claude account; the first time, Claude Code asks you to log in. Crook tells you
@@ -133,6 +141,8 @@ Claude can change most files without asking. Files inside a `.claude` folder —
 skills, commands, agents — are different: Claude Code always asks before it
 changes one, so answer **Yes** in Terminal. If a change needs other files too,
 Claude asks you before it touches them.
+
+![Editing a skill: Crook's banner says Claude Code asks in Terminal before changing it, and Terminal shows the edit with Yes selected](Assets/screenshots/claude-asks.png)
 
 ---
 
