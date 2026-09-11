@@ -22,5 +22,6 @@ if want("claude-runner") { ClaudeRunnerTests.run() }
 if want("claude-exit") { ClaudeRunnerTests.outcomes() }
 if want("claude-placement") { ClaudeRunnerTests.placement() }
 if want("claude-preflight") { ClaudePreflightTests.run() }
+if want("claude-registry") { ClaudeRegistryTests.run() }
 
 exit(T.summary())
