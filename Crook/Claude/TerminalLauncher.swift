@@ -38,8 +38,9 @@ enum TerminalLauncher {
             try put("argv", SessionRunner.encodeFields([claude] + claudeArguments))
         case .remote(let host, let dir):
             try put("mode", Data("remote".utf8))
+            // `--` so a host name can never be read as an ssh option.
             let ssh = [sshPath, "-t"] + SSHTransport.connectionOptions
-                + [host, SessionRunner.remoteCommand(workingDirectory: dir, arguments: claudeArguments)]
+                + ["--", host, SessionRunner.remoteCommand(workingDirectory: dir, arguments: claudeArguments)]
             try put("argv", SessionRunner.encodeFields(ssh))
         }
         if let frame { try put("frame", Data(frameEdges(frame).utf8)) }

@@ -19,6 +19,8 @@ enum ClaudeRunnerTests {
         let claude: URL
         let ssh: URL
         let shell: URL
+        /// A second copy of the stub, standing in for the claude Crook checked.
+        private(set) var verified: URL!
 
         init() {
             dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -32,6 +34,8 @@ enum ClaudeRunnerTests {
             try? fm.createDirectory(at: out, withIntermediateDirectories: true)
             install(claude, #"""
             #!/bin/zsh
+            print -rn -- "$0" > "$CROOK_STUB_OUT/which"
+            print -rn -- "$PATH" > "$CROOK_STUB_OUT/path"
             print -rn -- "$PWD" > "$CROOK_STUB_OUT/cwd"
             : > "$CROOK_STUB_OUT/args"
             for a in "$@"; do print -rn -- "$a" >> "$CROOK_STUB_OUT/args"; printf '\0' >> "$CROOK_STUB_OUT/args"; done
@@ -44,7 +48,10 @@ enum ClaudeRunnerTests {
             exec /bin/sh -c "${@[-1]}"
             """#)
             // The far Mac's login shell, answering `command -v claude`.
-            install(shell, "#!/bin/sh\nprintf '%s\\n' \"$CROOK_STUB_CLAUDE\"\n")
+            install(shell, "#!/bin/sh\nprintf 'motd noise from a login script\\n'\nprintf 'CROOK_PATH=%s\\n' \"$CROOK_STUB_FAR_PATH\"\nprintf '%s\\n' \"$CROOK_STUB_CLAUDE\"\n")
+            verified = bin.appendingPathComponent("verified/claude")
+            try? fm.createDirectory(at: verified.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.copyItem(at: claude, to: verified)
         }
 
         private func install(_ url: URL, _ text: String) {
@@ -52,7 +59,8 @@ enum ClaudeRunnerTests {
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }
 
-        func environment(stubOnPath: Bool = true, claudeOnFarMac: String? = nil, exit: Int32 = 0) -> [String: String] {
+        func environment(stubOnPath: Bool = true, claudeOnFarMac: String? = nil, exit: Int32 = 0,
+                         farPath: String = "") -> [String: String] {
             [
                 "HOME": dir.path,
                 "PATH": (stubOnPath ? bin.path + ":" : "") + "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -60,6 +68,7 @@ enum ClaudeRunnerTests {
                 "CROOK_STUB_OUT": out.path,
                 "CROOK_STUB_EXIT": String(exit),
                 "CROOK_STUB_CLAUDE": claudeOnFarMac ?? claude.path,
+                "CROOK_STUB_FAR_PATH": farPath,
             ]
         }
 
@@ -75,6 +84,8 @@ enum ClaudeRunnerTests {
         func args() -> [String]? { fields(out.appendingPathComponent("args")) }
         func sshArgs() -> [String]? { fields(out.appendingPathComponent("ssh-args")) }
         func cwd() -> String? { try? String(contentsOf: out.appendingPathComponent("cwd"), encoding: .utf8) }
+        func which() -> String? { try? String(contentsOf: out.appendingPathComponent("which"), encoding: .utf8) }
+        func path() -> String? { try? String(contentsOf: out.appendingPathComponent("path"), encoding: .utf8) }
 
         private func fields(_ url: URL) -> [String]? {
             guard let d = try? Data(contentsOf: url) else { return nil }
@@ -130,7 +141,7 @@ enum ClaudeRunnerTests {
 
         let local = bench.session("local")
         guard prepare(local, .local(workingDirectory: project.path, claudePath: "/nonexistent/claude"), args) else { return }
-        T.eq("CR-01  the runner reports a clean exit", runRunner(local, bench.environment())?.status, 0)
+        T.eq("CR-01  the runner reports a clean exit, finding claude on PATH when Crook's path is gone", runRunner(local, bench.environment())?.status, 0)
         T.eq("CR-02  claude runs in the working folder, spaces and all", bench.cwd(), project.path)
         T.eq("CR-03  every argument arrives byte for byte", bench.args(), args)
         T.ok("CR-04  nothing in them was ever run as code", !fm.fileExists(atPath: pwned.path))
@@ -147,7 +158,14 @@ enum ClaudeRunnerTests {
         _ = prepare(big, .local(workingDirectory: project.path, claudePath: bench.claude.path), bigArgs)
         // No stub on PATH: the path Crook found is the fallback.
         runRunner(big, bench.environment(stubOnPath: false))
-        T.eq("CR-07  a 100 KB request survives, through the fallback path", bench.args(), bigArgs)
+        T.eq("CR-07  a 100 KB request survives", bench.args(), bigArgs)
+
+        bench.reset()
+        let both = bench.session("both")
+        _ = prepare(both, .local(workingDirectory: project.path, claudePath: bench.verified.path), ["--"])
+        runRunner(both, bench.environment())
+        T.eq("CR-23  the claude Crook checked is the one that runs, even with another on PATH",
+             bench.which(), bench.verified.path)
 
         let failing = bench.session("fails")
         _ = prepare(failing, .local(workingDirectory: project.path, claudePath: bench.claude.path), ["--"])
@@ -180,16 +198,23 @@ enum ClaudeRunnerTests {
              runRunner(remote, bench.environment(stubOnPath: false))?.status, 0)
         let ssh = bench.sshArgs() ?? []
         let optionCount = SSHTransport.connectionOptions.count
-        T.ok("CR-13  ssh gets a terminal, Crook's own connection options, and the host",
+        T.ok("CR-13  ssh gets a terminal, Crook's own connection options, then -- and the host",
              ssh.first == "-t"
              && Array(ssh.dropFirst().prefix(optionCount)) == SSHTransport.connectionOptions
-             && ssh.count == optionCount + 3 && ssh[optionCount + 1] == "mac-mini",
+             && ssh.count == optionCount + 4 && ssh[optionCount + 1] == "--" && ssh[optionCount + 2] == "mac-mini",
              ssh.dropLast().joined(separator: " | "))
         T.ok("CR-14  the remote command is a fixed template with nothing of the request in it",
-             (ssh.last ?? "").hasPrefix("/bin/sh -c 'exec /bin/zsh -c ") && !(ssh.last ?? "").contains("quoted"))
+             (ssh.last ?? "").hasPrefix("/bin/sh -c 'exec /bin/zsh -fc ") && !(ssh.last ?? "").contains("quoted"))
         T.eq("CR-15  claude on the far Mac starts in the working folder", bench.cwd(), project.path)
         T.eq("CR-16  and receives every argument byte for byte", bench.args(), args)
         T.ok("CR-17  and nothing in them ran as code there either", !fm.fileExists(atPath: pwned.path))
+
+        bench.reset()
+        let farPath = bench.session("remote-path")
+        _ = prepare(farPath, .remote(host: "mac-mini", workingDirectory: project.path), ["--"], ssh: bench.ssh)
+        runRunner(farPath, bench.environment(stubOnPath: false, farPath: "/far/homebrew/bin:/usr/bin:/bin"))
+        T.eq("CR-24  claude on the far Mac gets that Mac's login PATH, so its MCP servers and hooks resolve",
+             bench.path(), "/far/homebrew/bin:/usr/bin:/bin")
 
         let rgone = bench.session("remote-gone")
         _ = prepare(rgone, .remote(host: "mac-mini", workingDirectory: "/nowhere/at/all"), [], ssh: bench.ssh)

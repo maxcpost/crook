@@ -79,15 +79,15 @@ enum ClaudePreflightTests {
              limitTook < 3 && partial == "partial\n", String(format: "%.1f s, %@", limitTook, partial))
 
         T.suite("claude-preflight — another Mac")
-        T.eq("CF-11  a path and a version",
-             ClaudePreflight.parseRemote("/Users/max/.local/bin/claude\n2.1.300 (Claude Code)\n"),
+        T.eq("CF-11  a path and a version, found by their markers among whatever a login script printed",
+             ClaudePreflight.parseRemote("Welcome to mac-mini\nCROOK_CLAUDE=/Users/max/.local/bin/claude\nCROOK_VERSION=2.1.300 (Claude Code)\n"),
              .ready(path: "/Users/max/.local/bin/claude", version: "2.1.300"))
-        T.eq("CF-12  an empty first line is missing", ClaudePreflight.parseRemote("\n"), .missing)
+        T.eq("CF-12  no path is missing", ClaudePreflight.parseRemote("CROOK_CLAUDE=\n"), .missing)
 
         // The real remote command, run here through /bin/sh the way a login
         // shell on the far Mac runs what ssh hands it.
         fakeClaude("2.4.0")
-        let farShell = script("far-shell", "#!/bin/sh\necho \(installed)\n")
+        let farShell = script("far-shell", "#!/bin/sh\necho 'a login script that talks'\necho CROOK_PATH=/usr/bin:/bin\necho \(installed)\n")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", ClaudePreflight.remoteCommand()]

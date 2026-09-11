@@ -129,12 +129,12 @@ enum ClaudePreflight {
 
     // MARK: - another Mac
 
-    /// Prints the path on one line and `claude --version` after it.
+    /// Prints marked lines: where claude is, and what `claude --version` said.
     static let remoteScript = "emulate -R zsh\n" + SessionRunner.resolveClaude + #"""
-    exe=$(crook_resolve_claude)
-    print -r -- "$exe"
-    if [[ -n $exe ]]; then
-      /usr/bin/perl -e 'alarm 10; exec @ARGV' "$exe" --version 2>/dev/null
+    crook_resolve_claude
+    print -r -- "CROOK_CLAUDE=$CROOK_EXE"
+    if [[ -n $CROOK_EXE ]]; then
+      print -r -- "CROOK_VERSION=$(/usr/bin/perl -e 'alarm 10; exec @ARGV' "$CROOK_EXE" --version 2>/dev/null | /usr/bin/head -n 1)"
     fi
     exit 0
 
@@ -143,14 +143,20 @@ enum ClaudePreflight {
     /// The same fixed template the runner uses, so nothing is quoted here either.
     static func remoteCommand() -> String {
         let script = Data(remoteScript.utf8).base64EncodedString()
-        return "/bin/sh -c 'exec /bin/zsh -c \"$(printf %s \(script) | /usr/bin/base64 -D)\"'"
+        return "/bin/sh -c 'exec /bin/zsh -fc \"$(printf %s \(script) | /usr/bin/base64 -D)\"'"
     }
 
+    /// Reads the marked lines, ignoring anything else the far Mac printed.
     static func parseRemote(_ output: String) -> Result {
-        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        guard let first = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines), first.hasPrefix("/")
-        else { return .missing }
-        return judge(path: first, versionOutput: lines.dropFirst().joined(separator: "\n"))
+        var path: String?
+        var version = ""
+        for raw in output.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("CROOK_CLAUDE=") { path = String(line.dropFirst("CROOK_CLAUDE=".count)) }
+            if line.hasPrefix("CROOK_VERSION=") { version = String(line.dropFirst("CROOK_VERSION=".count)) }
+        }
+        guard let path, path.hasPrefix("/") else { return .missing }
+        return judge(path: path, versionOutput: version)
     }
 
     /// Over the connection Crook already holds. nil when the Mac could not be

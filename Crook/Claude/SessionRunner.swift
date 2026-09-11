@@ -81,11 +81,12 @@ enum SessionRunner {
     /// A fixed template holding two base64 tokens, whose alphabet has no quote,
     /// space or `$`. `/bin/sh -c '…'` makes it parse the same whether that
     /// Mac's login shell is zsh, bash, fish or tcsh. The decoded script is
-    /// static; the payload is only ever data.
+    /// static; the payload is only ever data. `-f` keeps that Mac's .zshenv
+    /// — its aliases and functions — out of a script that did not ask for them.
     static func remoteCommand(workingDirectory: String, arguments: [String]) -> String {
         let script = Data(remoteScript.utf8).base64EncodedString()
         let payload = encodeFields([workingDirectory] + arguments).base64EncodedString()
-        return "/bin/sh -c 'exec /bin/zsh -c \"$(printf %s \(script) | /usr/bin/base64 -D)\" crook \(payload)'"
+        return "/bin/sh -c 'exec /bin/zsh -fc \"$(printf %s \(script) | /usr/bin/base64 -D)\" crook \(payload)'"
     }
 
     // MARK: - scripts
@@ -94,23 +95,34 @@ enum SessionRunner {
     /// interactive one, since installers add to PATH in .zshrc — then where the
     /// installers put it. An alias or a function is not a path and falls
     /// through to the known locations.
+    ///
+    /// Sets CROOK_EXE, and CROOK_LOGIN_PATH to that shell's PATH. The answers
+    /// are marked lines rather than "the last line", because a login script
+    /// that prints a greeting would otherwise be read as the answer.
     static let resolveClaude = #"""
     crook_resolve_claude() {
-      local exe c
-      exe=$(/usr/bin/perl -e 'alarm 8; exec @ARGV' "${SHELL:-/bin/zsh}" -lic 'command -v claude' </dev/null 2>/dev/null | /usr/bin/tail -n 1)
-      exe=${exe//$'\r'/}
-      if [[ $exe != /* || ! -x $exe ]]; then
-        exe=""
+      local out line c
+      CROOK_EXE=""
+      CROOK_LOGIN_PATH=""
+      out=$(/usr/bin/perl -e 'alarm 8; exec @ARGV' "${SHELL:-/bin/zsh}" -lic 'printf "%s\n" "CROOK_PATH=$PATH"; command -v claude' </dev/null 2>/dev/null)
+      for line in "${(@f)out}"; do
+        line=${line//$'\r'/}
+        case $line in
+          CROOK_PATH=*) CROOK_LOGIN_PATH=${line#CROOK_PATH=} ;;
+          /*) CROOK_EXE=$line ;;
+        esac
+      done
+      [[ -x $CROOK_EXE ]] || CROOK_EXE=""
+      if [[ -z $CROOK_EXE ]]; then
         for c in "$HOME/.local/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude "$HOME/.claude/local/claude"; do
-          if [[ -x $c ]]; then exe=$c; break; fi
+          if [[ -x $c ]]; then CROOK_EXE=$c; break; fi
         done
       fi
-      print -r -- "$exe"
     }
 
     """#
 
-    /// Runs on the other Mac as `zsh -c <this> crook <payload>`.
+    /// Runs on the other Mac as `zsh -fc <this> crook <payload>`.
     static let remoteScript = "emulate -R zsh\n" + resolveClaude + #"""
     typeset -a f
     f=("${(@0)"$(print -rn -- "$1" | /usr/bin/base64 -D)"}")
@@ -118,15 +130,18 @@ enum SessionRunner {
     dir=$f[1]
     shift f
     cd -- "$dir" 2>/dev/null || exit 91
-    exe=$(crook_resolve_claude)
-    [[ -n $exe ]] || exit 90
-    exec "$exe" "${f[@]}"
+    crook_resolve_claude
+    [[ -n $CROOK_EXE ]] || exit 90
+    # That Mac's login PATH, not sshd's bare one, so the MCP servers and hooks
+    # Claude starts find npx, uvx and Homebrew the way they do in its terminal.
+    [[ -n $CROOK_LOGIN_PATH ]] && export PATH=$CROOK_LOGIN_PATH
+    exec "$CROOK_EXE" "${f[@]}"
 
     """#
 
     /// launch.command, which Terminal runs.
     static let localScript = #"""
-    #!/bin/zsh
+    #!/bin/zsh -f
     # Crook: one Edit with Claude session.
     #
     # The same text for every session. Everything about this one is read from
@@ -175,8 +190,10 @@ enum SessionRunner {
       elif ! /bin/ls -- . >/dev/null 2>&1; then
         st=92
       else
-        exe=$(whence -p claude)
-        [[ -x $exe ]] || exe=$cmd[1]
+        # The claude Crook checked is the one that runs. An older one earlier
+        # on PATH would pass the version check and then refuse the arguments.
+        exe=$cmd[1]
+        [[ -x $exe ]] || exe=$(whence -p claude)
         if [[ -x $exe ]]; then
           run_child "$exe" "${(@)cmd[2,-1]}"
           st=$?
