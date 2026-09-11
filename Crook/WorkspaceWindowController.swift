@@ -24,7 +24,14 @@ final class WorkspaceWindowController: NSWindowController {
 
     /// Whether the bytes on disk still match what we loaded.
     enum SyncState { case inSync, reloaded, conflict, vanished }
-    private var syncState: SyncState = .inSync { didSet { refreshProxyIcon() } }
+    private var syncState: SyncState = .inSync { didSet { refreshProxyIcon(); sessions.refresh() } }
+
+    var fileVanished: Bool { syncState == .vanished }
+    var hasConflict: Bool { syncState == .conflict }
+
+    /// Edit with Claude for this window. Created at the end of init, once the
+    /// window and editor it attaches to exist.
+    private(set) lazy var sessions = SessionController(window: self)
     private var settleBack: DispatchWorkItem?
 
     private lazy var watcher = FileWatcher { [weak self] change in
@@ -101,6 +108,7 @@ final class WorkspaceWindowController: NSWindowController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appBecameActive),
             name: NSApplication.didBecomeActiveNotification, object: nil)
+        _ = sessions
         dumpViews()
     }
 
@@ -225,6 +233,12 @@ final class WorkspaceWindowController: NSWindowController {
         guard shouldClose else { return }
         closeCurrentDocument()
     }
+
+    // MARK: - Edit with Claude
+
+    @objc func editWithClaude(_ sender: Any?) { sessions.menuEditWithClaude() }
+    @objc func editWithClaudeNow(_ sender: Any?) { sessions.menuEditWithClaudeNow() }
+    @objc func endClaudeSession(_ sender: Any?) { sessions.menuEndSession() }
 
     private func windowIsClosing() {
         if let doc = document as? CrookDocument { doc.detachFromEditor() }
@@ -432,6 +446,7 @@ final class WorkspaceWindowController: NSWindowController {
         synchronizeWindowTitleWithDocumentName()
         reachContext = url.map { ReachClassifier.Context.resolve($0) }
         refreshReach()
+        sessions.refresh()
     }
 
     /// Reached By. NSWindow.subtitle does not add a line: on a .titled window
@@ -492,6 +507,7 @@ final class WorkspaceWindowController: NSWindowController {
         guard let doc = document as? CrookDocument, let url = doc.fileURL else { return }
         if case .vanished = change {
             syncState = .vanished
+            sessions.fileVanished(url)
             // Keep watching. A branch switch or a delete-then-rewrite removes
             // the path for longer than the grace period, and without this the
             // watcher stays dead for the rest of the session.
@@ -513,7 +529,11 @@ final class WorkspaceWindowController: NSWindowController {
         doc.reloadFromDisk()
         let after = doc.currentText()
 
-        if let d = LineDiff.between(before, after), !d.isEmpty {
+        if sessions.changeLanded(url: url, before: before, after: after) {
+            // Watch mode highlights precisely; the proxy icon still carries
+            // the net line change.
+            lastDelta = LineDiff.between(before, after)?.delta ?? 0
+        } else if let d = LineDiff.between(before, after), !d.isEmpty {
             let lines = Array(d.firstChanged...max(d.firstChanged, d.lastChanged))
             editor.bridge.pushChangedLines(lines)
             lastDelta = d.delta
@@ -553,6 +573,15 @@ final class WorkspaceWindowController: NSWindowController {
     func showChanges(for expected: URL?) {
         guard let doc = document as? CrookDocument, let url = doc.fileURL else { return }
         if let expected, expected != url { return }
+        if let review = sessions.reviewBaseline(for: url) {
+            // The automatic diff on open is for changes made while you were
+            // away; a file with a session has a banner saying that already.
+            guard expected == nil else { return }
+            let new = doc.currentText()
+            guard review.text != new else { NSSound.beep(); return }
+            editor.showDiff(old: review.text, new: new, title: review.title, since: nil)
+            return
+        }
         guard let old = pendingSnapshot ?? SeenStore.shared.snapshot(for: url) else {
             NSSound.beep(); return
         }
@@ -582,5 +611,11 @@ final class WorkspaceWindowController: NSWindowController {
             return "\(context) ▸ \(displayName)" + edited
         }
         return displayName + edited
+    }
+}
+
+extension WorkspaceWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        sessions.validate(item)
     }
 }

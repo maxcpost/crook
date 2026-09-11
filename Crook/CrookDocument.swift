@@ -95,6 +95,36 @@ class CrookDocument: NSDocument {
         }
     }
 
+    /// Put the buffer on disk before Claude reads the file. False when nothing
+    /// was written, having already told the person why.
+    ///
+    /// A local document is written directly rather than through NSDocument's
+    /// save: it is the same bytes the save would write, without AppKit's
+    /// "changed by another application" sheet when the person has chosen
+    /// their version over one on disk.
+    func saveBeforeSession() -> Bool {
+        guard isDocumentEdited else { return true }
+        if remoteProviderID != nil {
+            let outcome = saveRemote()
+            if case .saved = outcome { return true }
+            present(outcome)
+            return false
+        }
+        guard let url = fileURL else { return false }
+        do {
+            let bytes = try data(ofType: fileType ?? "net.daringfireball.markdown")
+            try Providers.local.write(bytes, to: url.path)
+            // NSDocument compares this against the disk before its next save.
+            fileModificationDate = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            updateChangeCount(.changeCleared)
+            SeenStore.shared.markSeen(url)
+            return true
+        } catch {
+            presentError(error)
+            return false
+        }
+    }
+
     private func present(_ outcome: RemoteSave) {
         switch outcome {
         case .saved:
@@ -324,6 +354,7 @@ class CrookDocument: NSDocument {
         editor.bridge.onEdit = { [weak self, weak editor] lowest in
             if lowest < Frontmatter.scanLimit { WorkspaceWindowController.shared.refreshReach() }
             self?.scheduleScan(editor)
+            WorkspaceWindowController.shared.sessions.userEdited(self?.fileURL)
         }
         editor.bridge.onReady = { [weak self, weak editor] in
             guard let self, let editor, editor.owner === self else { return }

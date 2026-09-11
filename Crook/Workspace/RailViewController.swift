@@ -381,6 +381,8 @@ extension RailViewController: NSOutlineViewDelegate {
 final class RailCell: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
     private let count = NSTextField(labelWithString: "")
+    /// Shown instead of the count while this file has an Edit with Claude session.
+    private let sessionMark = NSImageView()
 
     init(id: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -393,6 +395,12 @@ final class RailCell: NSTableCellView {
         count.textColor = .tertiaryLabelColor
         addSubview(label)
         addSubview(count)
+        sessionMark.translatesAutoresizingMaskIntoConstraints = false
+        sessionMark.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Editing with Claude")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+                .applying(.init(paletteColors: [SessionBanner.changedYellow])))
+        sessionMark.isHidden = true
+        addSubview(sessionMark)
         textField = label
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
@@ -400,6 +408,8 @@ final class RailCell: NSTableCellView {
             count.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 8),
             count.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             count.centerYAnchor.constraint(equalTo: centerYAnchor),
+            sessionMark.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            sessionMark.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -441,5 +451,11 @@ final class RailCell: NSTableCellView {
             count.textColor = .tertiaryLabelColor
             count.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         }
+        // A file Claude is editing right now, findable from anywhere in the tree.
+        let editing = node.kind == .file && node.url.map {
+            SessionRegistry.shared.liveSession(for: $0.path, providerID: Providers.current.id) != nil
+        } == true
+        sessionMark.isHidden = !editing
+        if editing { count.stringValue = "" }
     }
 }

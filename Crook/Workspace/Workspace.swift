@@ -370,6 +370,18 @@ final class Workspace {
         return parent.isEmpty ? nil : parent
     }
 
+    /// Every file in the tree at or below a folder. Edit with Claude uses it
+    /// to notice which other files changed during a session.
+    func filePaths(under folder: String) -> [String] {
+        var out: [String] = []
+        func walk(_ n: Node) {
+            if n.kind == .file, let p = n.url?.path, p.hasPrefix(folder + "/") { out.append(p) }
+            n.children.forEach(walk)
+        }
+        roots.forEach(walk)
+        return out
+    }
+
     // MARK: - imported projects (D-56: imported, never discovered)
 
     func importedURLs() -> [URL] {
@@ -446,6 +458,9 @@ final class Workspace {
             let slug = e.lastPathComponent
             guard slug.hasPrefix("-") else { return nil }
             let path = Self.decodeSlug(slug) ?? slug.replacingOccurrences(of: "-", with: "/")
+            // A session on a personal file runs in ~/.claude, and Claude Code
+            // then lists that folder as a project. It is not one.
+            guard path != claudeHome.path else { return nil }
             guard p.isDirectory(path) else { return nil }
             guard !imported.contains(path) else { return nil }
             return (URL(fileURLWithPath: path), Date(timeIntervalSince1970: entry.mtime))

@@ -79,6 +79,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showWorkspace()
         }
 
+        // Sessions from before Crook last quit: still running in Terminal, or
+        // finished while Crook was closed and waiting to be reviewed. The
+        // controller first, because it installs the callbacks reattach fires.
+        _ = WorkspaceWindowController.shared.sessions
+        SessionRegistry.shared.reattach()
+        WorkspaceWindowController.shared.sessions.refresh()
+
         // Reconnect to the machine this window was last looking at, in the
         // background. Never blocking: a mini that is asleep or off the tailnet
         // must not hold the app on a blank screen, so Crook opens local and
@@ -131,6 +138,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 keyEquivalent: "r")
         reload.keyEquivalentModifierMask = [.command]
         fileMenu.addItem(reload)
+        // Edit with Claude. The alternate replaces it while ⌥ is held and
+        // skips the question.
+        fileMenu.addItem(.separator())
+        let claude = NSMenuItem(title: "Edit with Claude…",
+                                action: #selector(WorkspaceWindowController.editWithClaude(_:)),
+                                keyEquivalent: "e")
+        claude.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(claude)
+        let claudeNow = NSMenuItem(title: "Edit with Claude Now",
+                                   action: #selector(WorkspaceWindowController.editWithClaudeNow(_:)),
+                                   keyEquivalent: "e")
+        claudeNow.keyEquivalentModifierMask = [.command, .shift, .option]
+        claudeNow.isAlternate = true
+        fileMenu.addItem(claudeNow)
+        fileMenu.addItem(withTitle: "End Claude Session",
+                         action: #selector(WorkspaceWindowController.endClaudeSession(_:)),
+                         keyEquivalent: "")
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
