@@ -4540,3 +4540,52 @@ Recorded as they happened. The code is authoritative where it differs from the b
    - **`SessionBanner.apply`** updates its buttons in place when the actions and titles are unchanged. `ClaudeButton` sizes its container to fit.
    - **`ClaudePreflight.systemLocations`** is a variable, so CF-09 and CF-10 set this Mac's Homebrew install aside instead of skipping. The version check's time limit is 4 s.
    - **Not changed:** the reviewer read spec §10.1 as forbidding the home folder as a starting folder. The code starts in the file's own folder, which is home only for a file directly in it. The spec was corrected instead.
+7. **Pre-release review and real-machine checks** (four reviewers plus checks S9 to S13; spec §14.0). Fixed, with tests:
+   - **Permissions:**
+     - `SessionPlan.preapprovalRule` became `preapprovalRules`, passed through `--settings` JSON (CP-30 to CP-32, CP-36);
+     - `asksBeforeEditing` and honest approval wording (CP-33 to CP-35, CP-37, CP-38; CV-34, CV-35).
+   - **Finding claude on this Mac:** every copy is considered, the login PATH is read from a marked line, and `--version` runs with a working PATH (CF-15 to CF-19).
+   - **The far Mac:**
+     - a `setsid` probe with a temp file and a group kill;
+     - a marked `CROOK_EXE` line, plus an `env -0` block that is imported;
+     - `crook_login_value` and `crook_apply_login_env` (CR-28 to CR-30; CF-13 now runs the probe).
+   - **The local runner:** the `abandoned` re-check, `cd -- "$S" || exit 0`, the tty passed to the closer, `exit $st` after an error (CR-25 to CR-27). The closer also checks one tab, idle and the same tty.
+   - **The registry:**
+     - a tolerant `Record.init(from:)`;
+     - on the start timeout, `runner.pid` is re-read, and a stand-down counts as didNotStart;
+     - SIGCONT on End Session;
+     - a delayed discard removes the record first;
+     - `reattach` keeps live-runner folders and dates dead sessions by `lastActivity` (CG-23 to CG-28).
+   - **The controller:**
+     - `provider(for:)`, text-based Undo/Redo availability and alert A‑14;
+     - drafts kept for Try Again, which A‑9 now offers too;
+     - the popover identity guard;
+     - the open-error guard, `fileReturned`, `isEditing`;
+     - the nudge announcement;
+     - frame restore only onto a screen;
+     - focus after banner actions;
+     - End Claude Session hidden unless live;
+     - Esc for OK.
+   - **The document and window:**
+     - `fileModificationDate` refreshed on reload;
+     - `diskChangedUnderEdits` in the conflict check;
+     - Save disabled during a session;
+     - a clean document closes with its window;
+     - flush before the dirty check;
+     - `FileWatcher` reports a file that returns.
+   - **Writes:** `LocalProvider.write` refuses folders and restores the group and permissions. The agent writes through symlinks the same way, and `agentVersion` is now 2 (A-30, A-31).
+   - **`UnifiedDiff`:** a Myers `editScript` past the LCS cell limit (U-10 to U-12, CV-36).
+   - **UI:** the banner's title over its note, truncating also-changed links, compact yellow sparkles, popover accessibility and line height, the key-view loop, Tab not counted as typing, grey sidebar sparkles for sessions awaiting review, the slug guard for `~/.claude` suggestions.
+   - **A second review of these fixes** found regressions, fixed with tests:
+     - the agent refused writes in projects reached through a linked folder (A-32);
+     - `diskModificationDate` must be the path's own date, as NSDocument keeps it, not the target's (CV-42);
+     - read-only and array names in the far login environment ended the script, so they're skipped and the script's array is renamed `CROOK_FIELDS`;
+     - `abandoned` only means didNotStart without a `child.pid` (CG-29);
+     - the key-view loop is recalculated when banner buttons are rebuilt;
+     - an installer-location copy with no version is retried with the shell's PATH (CF-20);
+     - the closer compares the tty only when Terminal reports one.
+   - **Found while checking it, from before this feature:** NSDocument couldn't save or autosave a symlinked document at all ("The file doesn't exist"). `writeSafely` now writes the linked file through `LocalProvider.write` for in-place saves (L-20 to L-23). `noteDiskUnchanged` keeps the date current when a file is rewritten with the bytes Crook already holds.
+   - **Reported and not changed:**
+     - remote reads on the main thread when a session ends, as elsewhere in Crook;
+     - a remote file deleted during a session shows no "moved or deleted" banner;
+     - an oh-my-zsh prompt can take Terminal's command (A‑9 with Try Again).

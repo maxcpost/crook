@@ -98,6 +98,7 @@ your projects — no dotfiles, no sidecars, no index.
 | `⌘R` | Reload from disk, discarding your edits |
 | `⌘D` | Show what changed since you last opened this file |
 | `⇧⌘E` | Edit with Claude |
+| `⌥⇧⌘E` | Edit with Claude, skipping the question |
 | `⌘+` `⌘−` `⌘0` | Bigger, smaller, actual size |
 
 ### Editing with Claude
@@ -114,18 +115,24 @@ first, it knows those too. Talk to Claude there. Every change it saves shows
 up in Crook straight away, highlighted.
 
 While Claude has the file it's read-only in Crook, so the two of you never type
-over each other. When you're done, type `/exit` in Terminal. Crook comes back
-to the front and says what changed: **Review Changes** shows the diff, and
-**Undo Changes** puts the file back exactly as it was.
+over each other. When you're done, type `/exit` in Terminal, or click **End
+Session** in Crook to get editing back straight away. Crook comes back to the
+front and says what changed: **Review Changes** shows the diff, and **Undo
+Changes** puts this file back exactly as it was before Claude started. Undo
+covers only this file — other files you let Claude change stay changed — and
+it stays on offer until you click **Done** or type in the file.
 
-You need [Claude Code](https://code.claude.com/docs/en/setup) installed, and
-Crook tells you if it isn't. The first time you use it in a folder, Claude Code
-asks whether you trust that folder; choose **Yes, I trust this folder**. For a
-file on another Mac, Claude runs on that Mac, over the connection Crook already
-has.
+You need [Claude Code](https://code.claude.com/docs/en/setup) installed and a
+Claude account; the first time, Claude Code asks you to log in. Crook tells you
+if it isn't installed. The first time you use it in a folder, Claude Code asks
+whether you trust that folder; choose **Yes, I trust this folder**. For a file
+on another Mac, Claude runs on that Mac, over the connection Crook already has,
+so Claude Code needs to be installed on that Mac.
 
-Claude can change the open file without asking. If a change needs other files
-too, Claude Code asks you before it touches each one.
+Claude can change most files without asking. Files inside a `.claude` folder —
+skills, commands, agents — are different: Claude Code always asks before it
+changes one, so answer **Yes** in Terminal. If a change needs other files too,
+Claude asks you before it touches them.
 
 ---
 

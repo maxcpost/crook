@@ -75,7 +75,7 @@ The button is as wide as what it currently says, so the window title keeps the r
 
 **Skipping the popover.** ⌥-clicking the button, or pressing ⌥⇧⌘E, opens the session straight away with no request.
 
-**The sidebar.** While a file has a session running, a small yellow `sparkles` symbol appears where its change count normally sits. That keeps the session easy to find after navigating to other files.
+**The sidebar.** While a file has a session running, a small yellow `sparkles` symbol appears where its change count normally sits. After the session ends it turns grey, until Done. That keeps the session easy to find after navigating to other files.
 
 ### 5.2 Asking: the popover
 
@@ -101,12 +101,13 @@ Clicking the button opens a popover under it. Typing a request is optional. Retu
   - with no selection, for a person's first three sessions: "Tip: select part of the file first to point Claude at it.", in tertiary ink;
   - otherwise: no second line.
 - **The request field.** Multi-line, three lines tall, growing to eight.
-  - **Return** opens the session. **⇧Return** starts a new line. **Esc** closes the popover.
-  - Closing keeps the draft for that file until Crook quits.
+  - **Return** opens the session. **⇧Return** starts a new line. **Esc** closes the popover. Return while an input method is composing finishes the composition instead.
+  - Closing keeps the draft for that file until Crook quits. So does opening a session that fails its checks or closes at the trust question: **Try Again** comes back to the popover with the request still there. The draft is cleared once a session has run.
 - **The footer.**
   - This Mac: "Opens Claude Code in Terminal, beside this window. Each change appears here as Claude saves it."
   - Another Mac: "Opens Claude Code on mac-mini, in Terminal beside this window. Each change appears here as Claude saves it."
-- **First-time line.** Until a session has started once, one more line appears: "The first time, Claude Code may ask you to log in. In a folder it hasn't seen before, it asks whether you trust it: choose “Yes, I trust this folder”." That trust question defaults to **No, exit** (check S4), which is why the line names the choice to make.
+- **A file inside a `.claude` folder** gets one more line: "Claude Code asks in Terminal before it changes a file in a .claude folder. Choose Yes there, and your changes appear here." (§10.2, check S10).
+- **First-time line.** Until a session has started once, one more line appears, in secondary ink so it can be read: "The first time, Claude Code may ask you to log in. In a folder it hasn't seen before, it asks whether you trust it: choose “Yes, I trust this folder”." That trust question defaults to **No, exit** (check S4), which is why the line names the choice to make.
 - **The button.** **Open Claude Code**, the default button.
 
 **Why a popover, instead of opening Terminal straight away:**
@@ -121,18 +122,18 @@ An empty request still works, and ⌥-click skips the popover entirely.
 When the person presses Open, the popover closes, the button shows **Opening…** and the editor becomes read-only. Crook runs these checks in order and stops at the first failure:
 
 1. **The file still exists.** If it disappeared since the popover opened: alert A‑7.
-2. **There's no conflict.** If the file changed on disk while the person had unsaved edits (`.conflict`), Crook asks which version Claude should work on (alert A‑5).
+2. **There's no conflict.** If the file changed on disk while the person had unsaved edits, Crook asks which version Claude should work on (alert A‑5). That covers a change the window watched happen (`.conflict`) and one it couldn't: a document held with unsaved edits while another file was open, or a file on another Mac. A local document compares the file's modification date with the one it last read or wrote; a remote one compares the bytes.
    - **Use My Version** saves over the disk copy.
    - **Use Disk Version** takes the disk copy, the same as ⌘R. If the disk copy can't be read, the edits stay and Crook shows alert A‑13 instead of going on to save them over it.
    - **Cancel** stops here.
 3. **Unsaved edits are saved.** Keystrokes still on their way from the editor are taken first, so the last few characters typed aren't left out. A local file saves in place. A remote file goes through `saveRemote()`. If saving fails, Crook shows its existing save error and nothing opens.
 4. **Crook is connected** (another Mac only). If not: alert A‑4, with a Reconnect button.
 5. **Claude Code is installed, and new enough, on the Mac that holds the file.**
-   - **This Mac:** Crook looks in the installer's known locations first, then asks the person's login shell, giving up after 3 s. It asks the Claude Code it found for its version, giving up after 4 s. It caches the result until Crook quits, and checks again if the cached path disappears.
+   - **This Mac:** any copy that is new enough will do, because the session runs the copy found here, and Macs collect more than one (a native install beside an old Homebrew one, or an npm install under nvm). Crook tries the installers' locations, then every `claude` along the PATH the person's login shell sets up. It reads that PATH from a marked line rather than asking `command -v claude`, which answers with the alias when someone has aliased claude, and gives the shell 6 s, because one that loads nvm and conda can take seconds. Each copy's `claude --version` runs with its own folder and that PATH ahead of the system's, giving up after 4 s, so a copy that runs through an interpreter beside it still answers. The first copy new enough wins; if none is, A‑3 names the newest version found. A good answer is cached until Crook quits, and checked again if the cached path disappears.
    - **Another Mac:** one command over Crook's existing connection.
    - **Missing:** alert A‑1 or A‑2. **Too old:** alert A‑3, with an Update in Terminal button.
 
-Checks take under 300 ms once Claude Code's location is cached. The first check on this Mac takes at most about 7 s, if both the login shell and the version check hang. On any failure the editor becomes editable again and the button returns to idle.
+Checks take under 300 ms once Claude Code's location is cached. The first check on this Mac takes about a second where the installer put Claude Code, and at most about 10 s if the login shell and a version check both hang. On any failure the editor becomes editable again and the button returns to idle.
 
 When every check passes, Crook saves the **baseline**, the exact bytes on disk at that moment, and then opens Terminal.
 
@@ -165,23 +166,26 @@ While Terminal starts, Crook's banner reads **Opening Claude Code in Terminal…
 
 While the session runs, Crook's editor shows the file live and read-only, with a banner across the top of the editor pane. The banner pushes the text down rather than covering it.
 
-**The running banner:**
+**The running banner:** the title with its note on a second line beneath it, so the note keeps the width Crook narrows itself to.
 
-> ● **Editing with Claude in Terminal** · Read-only here until you finish  [Show Terminal] [End Session]
+> ● **Editing with Claude in Terminal**
+> Read-only here until you finish  [Show Terminal] [End Session]
+
+For a file inside a `.claude` folder, the note reads **Claude Code asks in Terminal before changing it** until the first change lands.
 
 After Claude's first change, the note becomes **+12 −4 so far · read-only until you finish**.
 
 **When a change lands:**
 
 - **Reload.** Crook reloads through its existing path in `handleExternalChange`: the buffer is clean, so the file reloads, the caret and scroll position stay put, and the icon turns yellow.
-- **Precise highlights.** Highlights mark only the lines that actually changed, computed with `UnifiedDiff` against the previous content. A rename that touches line 3 and line 80 highlights those two lines, not the 78 lines between them. This applies only during a session. Outside sessions, highlighting still uses `LineDiff`.
+- **Precise highlights.** Highlights mark only the lines that actually changed, computed with `UnifiedDiff` against the previous content. A rename that touches line 3 and line 80 highlights those two lines, not the 78 lines between them. Past about 630 lines, where the full comparison would be too slow, an edit-distance comparison takes over, so a long file stays just as precise; only a rewrite of more than 1,000 lines is shown as one block. This applies only during a session. Outside sessions, highlighting still uses `LineDiff`.
 - **Scrolling.** If none of the changed lines are visible, the editor scrolls so the first one sits a third of the way down. If one of them is already visible, or the person scrolled within the last 3 s (with the wheel or trackpad, the scroll bar, or the arrow, Page, Home, End and Space keys), Crook leaves their position alone. The tally in the banner still updates.
 - **The tally.** Lines added and removed, counted against the baseline.
 - **VoiceOver** announces "Claude changed lines 12 to 18" when the changed lines are next to each other, and "Claude changed 2 lines" when they aren't, so a rename on lines 3 and 80 doesn't sound like everything between them.
 - **Claude's version is kept.** Crook stores the bytes of each change as it lands. If the session ends where Crook can't read the file (the connection dropped, or Crook was closed), Undo and Redo still have Claude's last version to work with.
 - **⌘D** (Show Changes) shows the diff against the baseline, meaning everything Claude has changed this session.
 
-**If the person tries to type** (a character, Delete, a paste, or dictation), nothing changes in the file. The banner briefly brightens and its note reads **To edit it yourself, finish in Terminal or click End Session** for 4 seconds. Selecting, copying, scrolling and zooming all keep working.
+**If the person tries to type** (a character, Delete, a paste, or dictation), nothing changes in the file. The banner briefly brightens and its note reads **To edit it yourself, finish in Terminal or click End Session** for 4 seconds, and VoiceOver says so. Selecting, copying, scrolling and zooming all keep working. Save is unavailable: the buffer is what was last read from disk, and writing it could only put back an older version.
 
 **Moving to another file and back.** Other files open and edit normally. Returning to the session's file puts it back in watch mode. The automatic "changed since you last opened it" diff doesn't appear for a file with a running session or a pending review, since the banner covers that.
 
@@ -240,7 +244,7 @@ Undo becomes available after reconnecting. It works from the last version of the
 
 **Redo Changes** writes the session's final bytes back.
 
-Undo and Redo are each offered only while the file on disk still matches what they would replace. Otherwise the button is disabled, with the tooltip "This file has changed since the session ended." Undo is never offered for a file that was moved or deleted, because writing the old path back would create a duplicate. It's also not offered when Crook never saw Claude's version: a session that ended while Crook was closed, with no change landing while Crook was watching. Crook can't tell Claude's last write from something that changed the file afterwards, so that banner offers Review Changes and Done.
+Undo and Redo are each offered only while the file still matches what they would replace. The button compares what's on screen, as text, with that version; the write itself compares the disk's exact bytes, and if they no longer match it changes nothing and says so (alert A‑14). Otherwise the button is disabled, with the tooltip "This file has changed since the session ended." Undo is never offered for a file that was moved or deleted, because writing the old path back would create a duplicate. It's also not offered when Crook never saw Claude's version: a session that ended while Crook was closed, with no change landing while Crook was watching. Crook can't tell Claude's last write from something that changed the file afterwards, so that banner offers Review Changes and Done.
 
 **How long the end banner stays.** Until the person clicks **Done**, types in the file, or starts another session on it. It stays across moving to other files and back, and across quitting and reopening Crook.
 
@@ -284,7 +288,7 @@ Read-only in **checking**, **opening**, **running** and **stopping**. Editable i
 | idle | Edit with Claude | none |
 | checking | Opening… | none |
 | opening | Opening… | Opening Claude Code in Terminal… |
-| running | ● Editing with Claude | Editing with Claude in Terminal · Read-only here until you finish, or +N −M so far |
+| running | ● Editing with Claude (yellow `sparkles` when the window is too narrow for the label) | Editing with Claude in Terminal · Read-only here until you finish, or +N −M so far |
 | running, file gone | ● Editing with Claude | Claude moved or deleted this file |
 | stopping | ● Editing with Claude | Ending the session… |
 | ended | Edit with Claude | Finished editing with Claude, or the lost-connection or stopped-unexpectedly wording |
@@ -310,7 +314,7 @@ Only the differences from a local file:
 - **Announcements.** VoiceOver announces the session starting, each change with its line numbers, and the session ending with its counts.
 - **Screen reader mode.** When VoiceOver is on, Claude Code starts with `--ax-screen-reader`.
 - **Reduce Motion.** Windows move without animation, and the banner changes its text without brightening.
-- **Keyboard.** Every action works from the keyboard: ⇧⌘E, ⌥⇧⌘E, Return, Esc and ⌘D. The banner buttons are in the key-view loop.
+- **Keyboard.** Every action works from the keyboard: ⇧⌘E, ⌥⇧⌘E, Return, Esc and ⌘D. The banner buttons join the key-view loop when the banner appears, and focus returns to the text after one of them removes itself. Esc answers OK in two-button alerts.
 
 ---
 
@@ -330,11 +334,12 @@ Alerts appear as sheets on Crook's window.
 | A‑6 | Saving before the session failed | Crook's existing save error | | |
 | A‑7 | The file disappeared before the session started | SKILL.md is no longer on disk. | It may have been moved or deleted. | OK |
 | A‑8 | macOS blocked Terminal from the folder | Terminal can't open the folder this file is in. | macOS hasn't given Terminal access to your Desktop folder. Turn it on in System Settings, then try again. | Open Privacy Settings · OK |
-| A‑9 | The session didn't report starting within 15 s | Claude Code didn't start. | If a Terminal window opened, it shows what went wrong. | OK |
+| A‑9 | The session didn't report starting within 15 s | Claude Code didn't start. | If a Terminal window opened, it shows what went wrong. | Try Again · OK |
 | A‑10 | Claude Code exited with an error without changing the file. Declining the trust question does exactly this: it exits with 1 in under a second (check S4). | Claude Code closed without making changes. | If it asked whether to trust this folder, try again and choose “Yes, I trust this folder”. Otherwise, Terminal shows what went wrong. | Try Again · OK |
 | A‑11 | The project folder is missing | The folder for this file is missing on mac-mini. (For this Mac: The folder for this file is missing.) | Claude Code needs to start in that folder. It may have been moved or renamed. | OK |
 | A‑12 | Terminal's ssh failed within 10 s | Couldn't reach mac-mini from Terminal. | ssh reported a problem, and Terminal shows what it said. Check that Crook is still connected, then try again. | OK |
 | A‑13 | Use Disk Version (A‑5) couldn't read the disk copy | Couldn't read SKILL.md from disk. | Your edits are still here. Try again, or choose Use My Version. | OK |
+| A‑14 | Undo or Redo found the file no longer holding the version it replaces | SKILL.md has changed since the session ended. | Undo (or Redo) would overwrite those changes, so Crook left the file as it is. | OK |
 
 On A‑3 and A‑4, "this Mac" and "mac-mini" become whichever machine holds the file. A‑8 names the protected folder: Desktop, Documents or Downloads.
 
@@ -359,6 +364,14 @@ On A‑3 and A‑4, "this Mac" and "mac-mini" become whichever machine holds the
 | Another app is the default for `.command` files | Crook always opens Terminal explicitly, so that setting doesn't matter. |
 | The Mac restarts and a session's process ID is reused | Crook records each process's start time. If it doesn't match, the session counts as ended. |
 | Files that may contain secrets (`.mcp.json`, `settings.local.json`) | No special handling. Claude Code reads them the way it reads any file. |
+| Several copies of Claude Code installed | The first new enough is used (§5.3), and that copy is the one Terminal runs. |
+| The person presses Ctrl‑Z in Claude Code | Claude Code and the runner are suspended together, and Claude Code says to type `fg`, which brings both back. End Session still ends it (§11.6). |
+| Terminal is set to close windows when the shell exits | A clean ending closes the window anyway. After an error the runner exits unclean, so "Close if the shell exited cleanly" keeps the window to read. |
+| A login script asks a question when Terminal opens (an oh‑my‑zsh update prompt) | It can take the command Terminal types, and the runner never starts: A‑9, whose Try Again opens a new window. |
+| Claude deletes the file and writes it again | The watcher reports the new file as a change once it's back, and the "moved or deleted" banner goes away. |
+| The window is closed while its file has no unsaved edits | The document closes with it, so opening the file again reads it fresh from disk. |
+| CLAUDE.md is a link to AGENTS.md | Saving, autosaving, the save before a session, and Undo and Redo all write AGENTS.md and leave the link a link, on this Mac and on another. A change to AGENTS.md made while a linked document sat unsaved in the background isn't raised as a conflict before a session (NSDocument keeps the link's own date); while the file is open the watcher follows the link and reloads it as usual. |
+| A project on another Mac reached through a linked folder (Dropbox, Google Drive) | Writes are checked against the project as the sidebar shows it, not where the link leads, so they save. |
 
 ---
 
@@ -381,7 +394,7 @@ claude
   --session-id <uuid>
   --name "Crook: SKILL.md — release-notes"
   --permission-mode default
-  --allowedTools "Edit(//Users/alice/atlas/.claude/skills/release-notes/SKILL.md)"
+  --settings '{"permissions":{"allow":["Edit(//Users/alice/atlas/.claude/skills/release-notes/SKILL.md)"]}}'
   --append-system-prompt "<§10.4>"
   [--ax-screen-reader]
   -- "<first message>"
@@ -389,7 +402,13 @@ claude
 
 - **`--permission-mode default`.** This is the ask-first mode. Version 2.1.268 lists it as `manual`, but it still accepts `default`, the name older versions also know, and the two behave identically (check S4). Crook passes it explicitly so that someone whose own default is `acceptEdits`, `auto` or `bypassPermissions` still gets asked before Claude edits any other file in this session. Check S4 confirmed that a command-line flag overrides a project's `acceptEdits` for that session.
 - **The pre-approval rule.** One `Edit(//absolute path)` rule. The `//` anchors the path at the root of the filesystem. Edit rules cover every tool that edits files. The rule is left out when the path contains glob characters.
-- **Argument order.** `--allowedTools` accepts any number of values, so the first message must come after `--` or it would be read as another tool. The tests pin this order.
+  - **Passed as settings, not `--allowedTools`** (check S9). That flag splits its value at a space or comma after a closing parenthesis. A folder named "Notes (copy) v2" cut the rule in two and left the file unapproved; "Scripts (old) Bash tools" would have produced a bare `Bash` rule, allowing every shell command.
+  - **In both Unicode forms** when they differ (check S9). Claude Code writes the path in composed form, so a folder whose name is stored decomposed never matched a rule in that form alone.
+- **Files inside a `.claude` folder always ask** (check S10). Claude Code treats them as sensitive: no allow rule or permission mode short of skipping every check lets Claude edit one without asking. Skills, commands and agents all live there, so Crook says so rather than promising otherwise:
+  - the popover adds "Claude Code asks in Terminal before it changes a file in a .claude folder. Choose Yes there, and your changes appear here.";
+  - the running banner's note reads "Claude Code asks in Terminal before changing it" until the first change lands;
+  - the system prompt tells Claude the question is expected (§10.4).
+- **Argument order.** The first message comes after `--`, so a message starting with `-` is still a message. The tests pin this order.
 - **The session name** is built as follows:
   1. start with the file name;
   2. if the name is a common one (CLAUDE.md, SKILL.md, AGENTS.md, README.md, settings.json, settings.local.json, .mcp.json), add " — " and the folder it's in;
@@ -423,15 +442,20 @@ How to work with them:
 - Crook shows this file live and highlights each change as you save it. Crook
   keeps the file read-only while this session is open, so you are the only one
   editing it.
-- Edits to this file are already approved. Change what they ask for and nothing
+- {one of:}
+  Edits to this file are already approved. Change what they ask for and nothing
   else.
+  {inside a .claude folder:} Claude Code asks them to approve edits to this file,
+  because it is inside a .claude folder. That is expected, not an error. Change
+  what they ask for and nothing else.
+  {no rule, because the path has glob characters:} Claude Code asks them to
+  approve edits to this file. Change what they ask for and nothing else.
 - Keep everything you weren't asked to change exactly as it is: line endings,
   indentation, trailing whitespace, blank lines, the final newline, and
   frontmatter fields.
 - If their request also needs other files changed (a skill folder renamed, a
-  reference in another CLAUDE.md, a command that points at this file), say which
-  files and why before editing them. Claude Code will ask them to approve each
-  one.
+  reference in another CLAUDE.md, a command that points at this file), tell them
+  which files and why, and wait for them to say yes before editing any of them.
 - If their first message doesn't say what to change, read the file and reply in
   one or two sentences: what the file is for, then ask what they'd like to
   change. Don't edit anything until they ask.
@@ -471,15 +495,16 @@ Crook calls `NSWorkspace.open(_:withApplicationAt:configuration:)` with `launch.
 One static zsh script, identical for every session. It:
 
 1. **Records itself.** It finds its session folder from its own path and writes its process ID to `runner.pid`. When Crook reattaches after a restart, it identifies the runner by that process's arguments (`sysctl KERN_PROCARGS2`), which name this session's `launch.command`. A reused process ID can't match that.
+   - If Crook has already given up waiting (an `abandoned` file), it exits before and again just after writing `runner.pid`, removing it. Crook, on giving up, looks for `runner.pid` once more and watches a runner that reported in the same moment. One that stands down without a report counts as not started.
 2. **Places its window.** It asks Terminal, through `osascript` and `window.applescript`, for the ID of the window whose busy tab is on its own tty, and writes that ID to `window`. If Crook asked for a position, it sets that window's `frame` twice, a second apart (check S2). A window with more than one tab is left alone. The AppleScript window ID is the same number `CGWindowListCopyWindowInfo` reports, which is how Crook confirms the move landed.
 3. **Gets ready to run Claude Code.**
    - **This Mac:** it changes into the working folder and lists it, which is where a macOS folder permission denial shows up (exit reason `folder-access`). It then finds `claude` on the person's own PATH, which comes from the login shell Terminal started. If that fails, it uses the path Crook found during the checks.
    - **Another Mac:** it runs `/usr/bin/ssh -t <Crook's connection options> <host> <remote command>`.
 4. **Starts Claude Code, or ssh, in the foreground** through `/bin/zsh -c 'print $$ > …/child.pid; exec "$@"' crook <argv>`. That records the process Crook will signal for End Session, and passes the arguments as arguments, never as code.
-5. **Reports the exit.** After that process exits, it writes `exit` as "status seconds".
+5. **Reports the exit.** After that process exits, it changes back into its session folder and writes `exit` as "status seconds". If the folder is gone (a cache cleaner, or a session Crook forgot), it exits without a report rather than writing one into the project.
    - After End Session, it closes its own window.
-   - After a clean exit (0 or 130), or its own failure (90–92), it brings Crook forward with `open -b` and closes its window. The close is a detached `osascript … close-when-idle`, started through `perl -MPOSIX -e 'setsid()…'` so it isn't counted as a process running in the window. It waits until the tab is no longer busy, then closes the window by ID, with no prompt (check S3).
-   - Otherwise it leaves the window open, with a final line, so the error can be read.
+   - After a clean exit (0 or 130), or its own failure (90–92), it brings Crook forward with `open -b` and closes its window. With more than one copy of Crook installed, `open -b` brings forward the copy that is running, even an older one, and only launches the newest when none is (check S12). The close is a detached `osascript … close-when-idle`, started through `perl -MPOSIX -e 'setsid()…'` so it isn't counted as a process running in the window. It waits up to 10 s for the tab to go idle, then closes the window by ID with no prompt (check S3), but only if it still has one tab, nothing running, and the tty the runner was given.
+   - Otherwise it leaves the window open, with a final line, and exits with Claude Code's status. A Terminal set to close windows when the shell exits cleanly then keeps it open to be read.
 
 **The quoting rule.** Text from a file name, a path, a machine name or a person's request is never put into shell source code.
 
@@ -497,8 +522,13 @@ The decoded script is the static remote runner, and the payload is only data.
 A static zsh script following the same quoting rule. It:
 1. decodes the payload;
 2. changes into the working folder, or exits with 91 if the folder is missing;
-3. finds `claude` using that Mac's login shell (`$SHELL -lic 'command -v claude'`), then falls back to `~/.local/bin/claude`, `/opt/homebrew/bin/claude` and `/usr/local/bin/claude`, or exits with 90 if none exist;
-4. runs Claude Code in that login shell's environment, passing the arguments as arguments.
+3. asks that Mac's login shell (`$SHELL -lic`) where `claude` is and for its environment;
+   - the probe is plain enough for zsh, bash and fish: `command -v claude` marked with `CROOK_EXE=`, then `env -0` between markers;
+   - the shell runs in a session of its own (`setsid`), reading nothing, with its output in a temporary file, and is killed with its process group after 8 s. It can't take keystrokes meant for Claude, can't hang the session, and a greeting or path printed by a login script is never taken for the answer;
+4. if that gives no path (an alias or function named claude answers with itself), looks along that shell's PATH, then `~/.local/bin/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude` and `~/.claude/local/claude`, or exits with 90;
+5. exports that shell's environment, less what describes the shell and terminal (`PWD`, `SHLVL`, `TERM*`, `SSH_*`, `TMUX*`, zsh's own specials, the runner's own variables, and any name zsh holds read-only or as an array, which it can't export and which would end the script), and runs Claude Code with the arguments as arguments. API keys, proxies and a `CLAUDE_CONFIG_DIR` set in the far Mac's shell files then apply, as they do in its own Terminal.
+
+The far-Mac check (§5.3) uses the same probe and environment for `claude --version`.
 
 ### 11.5 Tracking the session
 
@@ -522,11 +552,16 @@ Rows are checked from top to bottom, and the first match wins:
 | Any other non-zero | Stopped unexpectedly |
 | No runner report within 15 s of opening Terminal | Didn't start (A‑9) |
 
-- **Reattaching.** On launch, Crook reattaches every session folder whose `runner.pid` names a live process with a matching start time.
+- **Reattaching.** On launch, Crook reattaches every session folder whose `runner.pid` names a live process running its `launch.command`.
+  - A folder whose runner is still alive is never deleted, whether or not it has a record: an Update in Terminal, or a session whose record this version can't read.
+  - Records are read tolerantly. Only the file, machine and folder are required; a missing field takes its default, and an outcome this version doesn't know counts as finished. An unreadable record is kept until its folder has been idle for 7 days.
+  - A session found dead at launch is dated by the newest of its files (`exit`, `final`, `window`, the pid files, the record), not by the relaunch, so the 7-day clean-up counts from when it really ended.
 
 ### 11.6 End Session
 
 Crook sends SIGTERM to the process in `child.pid`. That's Claude Code on this Mac, or ssh for another Mac, where ssh exiting hangs up Claude Code on the far side. If the process is still alive after 3 s, Crook sends SIGKILL. The fallback is required: during the spike, Claude Code sitting at its trust question ignored SIGTERM (check S5).
+
+Ctrl‑Z in Claude Code suspends it and the runner together; typing `fg` in that window brings both back (check S11). A suspended process holds SIGTERM until it continues, and a suspended runner can't collect its child or report, so End Session also sends SIGCONT to both, after SIGTERM and again after SIGKILL.
 
 Crook only signals a process that is still this session's. The process in `child.pid` must still be the runner's child, according to the kernel. If it isn't, because it exited and its process ID was reused, or the runner hasn't started it yet, Crook signals the runner, and only after confirming the runner is still running this session's `launch.command`. Both checks run again before SIGKILL.
 
@@ -582,6 +617,8 @@ Changes to existing code:
 New suites run in Crook's existing harness (`./scripts/test.sh <suite>`).
 
 - **`claude-plan`**
+  - The rule travels in `--settings`, in one piece for folders like "My Notes (copy) it's", and in both Unicode forms; `--allowedTools` is never used.
+  - Files inside a `.claude` folder are recognised, and the system prompt says approval is asked, never "already approved", for them and for paths with no rule.
   - The working folder for a project file, a file in a nested project, a personal file, a file outside every project, and a file on another Mac.
   - Relative paths.
   - All four first-message forms.
@@ -595,6 +632,8 @@ New suites run in Crook's existing harness (`./scripts/test.sh <suite>`).
   - Hostile inputs: spaces, `'`, `"`, `$(…)`, backticks, `;`, newlines, glob characters, non-ASCII text, a leading `-`, and a 100 KB request. The arguments must arrive byte for byte.
   - The remote path, using a stub `ssh`. The stub checks for `-t` and the exact connection options, then runs the remote command string locally through `/bin/sh -c`. This follows the existing agent tests: the full contract, without needing a second Mac.
   - Exit reasons 90, 91 and 92, plus an early non-zero exit.
+  - A session folder that disappears mid-session writes nothing into the project; a runner Crook stopped waiting for starts nothing; after an error the runner itself exits unclean.
+  - The far Mac: the claude found is its login shell's even when login scripts print paths; claude gets that shell's environment; a login shell that hangs is given up on and the installer's location is used.
 - **`claude-registry`**
   - Detects a session starting, and detects it exiting using a real child process.
   - Rejects a reused process ID when the start time doesn't match.
@@ -602,6 +641,8 @@ New suites run in Crook's existing harness (`./scripts/test.sh <suite>`).
   - End Session signals the child process, and never a process that isn't the runner's child.
   - A session folder kept for a delay is still there before it and gone after.
   - Cleanup after Done and after 7 days.
+  - End Session ends a session that Ctrl‑Z suspended.
+  - A record from another version is still read; a folder a live runner uses is left alone; a session found dead is dated by its files; a runner that stood down counts as not started; a delayed discard removes the record at once.
 - **`claude-review`**
   - Tally counts.
   - Undo and Redo write exact bytes for CRLF files, files without a final newline, and files with a byte-order mark. Tested through `LocalProvider`, and through `RemoteProvider` using the real helper over a pipe.
@@ -612,6 +653,7 @@ New suites run in Crook's existing harness (`./scripts/test.sh <suite>`).
   - Finds Claude Code in the known locations, using `Paths.homeOverride` and fake binaries that print a version.
   - Version comparison.
   - Falling back to the login shell, including the timeout.
+  - An alias doesn't hide the program on the shell's PATH; an old copy doesn't hide a newer one; the newest of several old copies is named; a copy that needs a program beside it still reports its version; a version printed after a warning is found.
   - Not installed, with this Mac's own Homebrew locations set aside so the test means the same on every Mac.
 
 All existing suites must still pass unchanged, especially `bytes` and the regression suite.
@@ -651,6 +693,18 @@ These ran on 11 September 2026: macOS 26.6.2, Claude Code 2.1.268, a built-in di
 
 ---
 
+### 14.0 Checks after the pre-release review
+
+These ran on 11 September 2026, against Claude Code 2.1.268 and 2.1.269, with the same Mac.
+
+| # | What was checked | Result | What the design does |
+|---|---|---|---|
+| S9 | The pre-approval rule on unusual paths, with `claude -p` and a one-word Edit | **`--allowedTools` fails** for a folder with a space or comma after `)` ("My Notes (copy) its", "NOTES (1) final.md"): the flag splits there, and escaping the parentheses doesn't help. Spaces, parentheses without a following space, apostrophes and composed accents pass. **A decomposed accent fails**, because Claude writes the path composed. **`--settings` JSON passes** for every case, with both forms of an accented path. | §10.2: rules as settings, in both forms. |
+| S10 | Files inside a `.claude` folder | **Always asks.** An allow rule in settings or `--allowedTools`, a directory glob, a `~` rule and `acceptEdits` all left the edit denied in `-p`; Claude Code's message calls it a sensitive file. Interactively it asks "Do you want to make this edit to SKILL.md?" with Yes selected. A project `CLAUDE.md` outside `.claude` edits without asking. | §10.2: the copy says Claude Code asks. The README says to choose Yes, and not the second choice, which can switch the whole session to accepting edits. |
+| S11 | Ctrl‑Z in Claude Code, in a job-control shell as Terminal runs it | Claude Code and the runner were both suspended; `fg` resumed both and Claude Code redrew. SIGKILL left Claude Code a zombie under the suspended runner, so End Session never completed. With SIGCONT added, End Session finished in 3 s in real Terminal. | §11.6. |
+| S12 | `open -b` with two registered copies of an app | With either copy running, `open -b` activated that copy and launched nothing. With neither running, it launched the newer. | §11.3: unchanged. |
+| S13 | How installs start | The current npm package's `claude` is a native binary, like the installer's and Homebrew's; a Dock-launched app's PATH lacks nothing it needs. This Mac had both 2.1.268 (installer) and an old Homebrew 2.1.185. `claude update` recognises a Homebrew install and upgrades through Homebrew. | §5.3: every copy is considered; Update in Terminal is unchanged. |
+
 ### 14.1 End to end, in the real app
 
 A build compiled with `-D CROOK_E2E` drives a real session on its own (`scripts/e2e-claude.py`): the popover, the checks, Terminal, a real Claude Code, the reload, an ending, then review, Undo, Redo and Done. It photographs only Crook's and Terminal's windows. Every run was on 11 September 2026, against a scratch file:
@@ -661,6 +715,10 @@ A build compiled with `-D CROOK_E2E` drives a real session on its own (`scripts/
 | Crook makes room, then `/exit` | The first run found the `bounds` problem (S2): Terminal landed 187 pt off, so Crook correctly didn't move. After the switch to `frame`, Terminal landed exactly on its plan, and Crook narrowed from 3300 to 2880 pt. `/exit` ended the session as finished, Terminal closed, and Crook's frame was restored. |
 | Quit Crook mid-session, relaunch | The runner kept going in Terminal. The relaunched Crook found the session running and read-only, ended it, and reviewed it. Its frame was restored once the size-only comparison for reattached sessions was added. |
 | Another Mac (localhost sshd, throwaway key, real ssh and Claude Code) | Terminal's ssh joined the shared connection. The remote runner found `claude` through the login shell and ran it in the project folder. Claude made exactly the requested change. End Session stopped ssh (exit 255, counted as finished) and Terminal closed. |
+| After the pre-release review: a full session on a 131-line file | Change on line 128 highlighted and scrolled into view, banner buttons kept, End Session in 1 s with Terminal closed through the new tty check, window closed and the file reopened fresh, Undo and Redo byte-exact, Done. |
+| Ctrl‑Z, then End Session | Runner and Claude Code both suspended (`T`); End Session finished in 3 s and the window closed. Typing afterwards autosaved to disk within 20 s with no "changed by another application" sheet. |
+| A skill inside a `.claude` folder | Popover and banner showed the `.claude` note; Claude Code asked in Terminal; End Session with no change ended as finished with "This file wasn't changed". |
+| Another Mac, a project in "remote proj (copy) v2" | The far-Mac check found 2.1.269 in 0.9 s through the new probe. Terminal's ssh joined the connection, Claude edited without asking through the settings rule, End Session ended it (ssh 255, finished) and the window closed. |
 | After the second review: a change far down the file, then closing and reopening the window | The change landed on line 128 of 131 while the window showed the first 30 lines. The editor scrolled to it (scrollTop 0 to 3189, the highlighted line visible), and the banner kept its buttons as its tally updated. The title bar button measured 140 pt idle, 111 pt opening and 153 pt running. With the session ended, closing the window removed the button and banner. Opening the file again brought the end banner back, and Undo and Redo were still byte-exact. |
 
 Not run for real, and covered by unit tests plus the copy: the failure alerts (not installed, too old, folder access, closed without changes), because each needs a broken machine to trigger honestly; and a session on `mac-mini` through the Crook UI, which wasn't reachable that day.
