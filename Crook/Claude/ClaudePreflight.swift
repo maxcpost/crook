@@ -29,12 +29,16 @@ enum ClaudePreflight {
     /// install aside and exercise the not-installed path on any Mac.
     nonisolated(unsafe) static var systemLocations = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
 
-    /// `claude --version` prints "2.1.268 (Claude Code)".
+    /// `claude --version` prints "2.1.268 (Claude Code)". The first word that
+    /// is a version, so a warning printed ahead of it doesn't hide it.
     static func version(from output: String) -> String? {
-        guard let token = output.split(whereSeparator: { $0 == " " || $0 == "\n" }).first else { return nil }
-        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
-        guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else { return nil }
-        return String(token)
+        for token in output.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" }) {
+            let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+            if parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) {
+                return String(token)
+            }
+        }
+        return nil
     }
 
     static func isAtLeast(_ version: String, _ minimum: String) -> Bool {
@@ -58,31 +62,77 @@ enum ClaudePreflight {
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var cached: (path: String, version: String)?
 
-    /// Blocks for up to a few seconds the first time; call it off the main
+    /// Blocks for up to several seconds the first time; call it off the main
     /// thread. A good answer is remembered until Crook quits, and asked again
     /// if that path stops existing.
+    ///
+    /// Any copy that is new enough will do, because the session runs the copy
+    /// found here. Macs collect more than one: a native install beside an old
+    /// Homebrew one, or an npm install under nvm.
     static func checkLocal(home: String = Paths.home, loginShell: String = ClaudePreflight.loginShell()) -> Result {
         cacheLock.lock(); let known = cached; cacheLock.unlock()
         if let known, FileManager.default.isExecutableFile(atPath: known.path) {
             return .ready(path: known.path, version: known.version)
         }
-        var path = knownLocations(home: home).first { FileManager.default.isExecutableFile(atPath: $0) }
-        if path == nil {
-            // Installed somewhere else: ask the person's own shell, the way
-            // Terminal will. Interactive, because installers add to PATH in
-            // .zshrc — and bounded, because an rc file can wait forever.
-            let out = run(loginShell, ["-lic", "command -v claude"], timeout: 3)
-            if let last = out.split(separator: "\n").last?.trimmingCharacters(in: .whitespacesAndNewlines),
-               last.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: last) {
-                path = last
+        var tried = Set<String>()
+        var unanswered: [String] = []
+        var newestTooOld: String?
+        func consider(_ path: String, shellPath: [String]) -> Result? {
+            let real = (path as NSString).resolvingSymlinksInPath
+            guard FileManager.default.isExecutableFile(atPath: path), !tried.contains(real) else { return nil }
+            // Its own folder first: an install that runs through an interpreter
+            // keeps it there, and an app opened from the Dock has only the
+            // system's folders on its PATH.
+            let search = [(path as NSString).deletingLastPathComponent] + shellPath + fallbackPath
+            let output = run(path, ["--version"], timeout: 4, environment: ["PATH": search.joined(separator: ":")])
+            switch judge(path: path, versionOutput: output) {
+            case .ready(let p, let v):
+                tried.insert(real)
+                cacheLock.lock(); cached = (p, v); cacheLock.unlock()
+                return .ready(path: p, version: v)
+            case .tooOld(let v):
+                tried.insert(real)
+                if newestTooOld.map({ !isAtLeast($0, v) }) ?? true { newestTooOld = v }
+                return nil
+            case .missing:
+                // No version: perhaps it runs through node, and node is only
+                // on the shell's PATH (nvm). Asked again once that is known.
+                if shellPath.isEmpty { unanswered.append(path) } else { tried.insert(real) }
+                return nil
             }
         }
-        guard let path else { return .missing }
-        let result = judge(path: path, versionOutput: run(path, ["--version"], timeout: 4))
-        if case .ready(let p, let v) = result {
-            cacheLock.lock(); cached = (p, v); cacheLock.unlock()
+
+        for path in knownLocations(home: home) {
+            if let ready = consider(path, shellPath: []) { return ready }
         }
-        return result
+        // Not where the installers put it, or only an old copy is: look along
+        // the PATH the person's own shell sets up, the way Terminal will.
+        let shellPath = loginShellPath(loginShell)
+        for path in unanswered where !shellPath.isEmpty {
+            if let ready = consider(path, shellPath: shellPath) { return ready }
+        }
+        for dir in shellPath {
+            if let ready = consider(dir + "/claude", shellPath: shellPath) { return ready }
+        }
+        return newestTooOld.map { .tooOld(version: $0) } ?? .missing
+    }
+
+    /// The folders a Dock-launched app is missing that installers commonly use.
+    static let fallbackPath = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+    /// The PATH an interactive login shell ends up with, read from a marked
+    /// line so whatever the rc files print can't be taken for it.
+    ///
+    /// The PATH itself rather than `command -v claude`, which answers with the
+    /// alias when someone has aliased claude. Interactive, because installers
+    /// add to PATH in .zshrc; bounded, because an rc file can wait forever —
+    /// generously, because one that loads nvm and conda can take seconds.
+    static func loginShellPath(_ shell: String) -> [String] {
+        let out = run(shell, ["-lic", #"printf '%s\n' "CROOK_PATH=$PATH""#], timeout: 6)
+        guard let line = out.split(separator: "\n").last(where: { $0.hasPrefix("CROOK_PATH=") }) else { return [] }
+        return line.dropFirst("CROOK_PATH=".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ":").map(String.init).filter { $0.hasPrefix("/") }
     }
 
     /// After an update, the remembered version is no longer the installed one.
@@ -105,7 +155,8 @@ enum ClaudePreflight {
     /// Output goes to a file, not a pipe. An interactive shell can leave a
     /// background helper holding a pipe open long after it exits, and a read
     /// that waits for the pipe to close would wait for that helper too.
-    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) -> String {
+    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval,
+                    environment: [String: String]? = nil) -> String {
         let fm = FileManager.default
         let capture = fm.temporaryDirectory.appendingPathComponent("crook-preflight-\(UUID().uuidString)")
         guard fm.createFile(atPath: capture.path, contents: nil),
@@ -115,6 +166,9 @@ enum ClaudePreflight {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = arguments
+        if let environment {
+            p.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+        }
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = handle
         p.standardError = FileHandle.nullDevice
@@ -137,7 +191,9 @@ enum ClaudePreflight {
     crook_resolve_claude
     print -r -- "CROOK_CLAUDE=$CROOK_EXE"
     if [[ -n $CROOK_EXE ]]; then
-      print -r -- "CROOK_VERSION=$(/usr/bin/perl -e 'alarm 10; exec @ARGV' "$CROOK_EXE" --version 2>/dev/null | /usr/bin/head -n 1)"
+      # In that Mac's login environment, where anything claude needs to start is.
+      crook_apply_login_env
+      print -r -- "CROOK_VERSION=$(/usr/bin/perl -e 'alarm 10; exec @ARGV' "$CROOK_EXE" --version 2>/dev/null | /usr/bin/head -n 5 | /usr/bin/tr '\n' ' ')"
     fi
     exit 0
 

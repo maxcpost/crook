@@ -59,11 +59,26 @@ enum ClaudePlanTests {
 
         T.suite("claude-plan — permissions and arguments")
         T.eq("CP-16  one Edit rule, anchored at the filesystem root",
-             SessionPlan.preapprovalRule(for: "/Users/alice/.claude/CLAUDE.md"),
-             "Edit(//Users/alice/.claude/CLAUDE.md)")
+             SessionPlan.preapprovalRules(for: "/Users/alice/.claude/CLAUDE.md"),
+             ["Edit(//Users/alice/.claude/CLAUDE.md)"])
         T.ok("CP-17  a path that would read as a glob gets no rule",
-             SessionPlan.preapprovalRule(for: "/Users/alice/notes [old]/CLAUDE.md") == nil
-             && SessionPlan.preapprovalRule(for: "/Users/alice/a*b/CLAUDE.md") == nil)
+             SessionPlan.preapprovalRules(for: "/Users/alice/notes [old]/CLAUDE.md").isEmpty
+             && SessionPlan.preapprovalRules(for: "/Users/alice/a*b/CLAUDE.md").isEmpty)
+        // Claude Code writes the path it edits in composed form. A folder named
+        // in decomposed form, as older Macs and copied folders often are, would
+        // otherwise never match its own rule.
+        let decomposed = "/Users/alice/Re\u{301}sume\u{301}/CLAUDE.md"
+        let rules = SessionPlan.preapprovalRules(for: decomposed)
+        // Compared as bytes, because String's == treats the two forms as equal.
+        let bytes = Set(rules.map { Array($0.utf8) })
+        T.ok("CP-30  an accented path is approved in both of the forms it can be written",
+             rules.count == 2 && bytes.contains(Array(("Edit(/" + decomposed + ")").utf8))
+             && bytes.contains(Array(("Edit(/" + decomposed.precomposedStringWithCanonicalMapping + ")").utf8)),
+             "\(rules.map { Array($0.utf8).count })")
+        let carried = SessionPlan.permissionSettings(rules)
+            .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: [String: [String]]] }?["permissions"]?["allow"]
+        T.ok("CP-36  and both forms survive the trip through settings JSON",
+             carried.map { Set($0.map { Array($0.utf8) }) } == bytes)
 
         let id = UUID(uuidString: "5414D6ED-EA49-4E8B-8431-0867AE492537")!
         let plan = SessionPlan.make(.init(
@@ -76,8 +91,25 @@ enum ClaudePlanTests {
              ["--session-id", "5414d6ed-ea49-4e8b-8431-0867ae492537"])
         T.ok("CP-19  ask before editing anything else, whatever the person's own default",
              pairs.contains { $0 == "--permission-mode" && $1 == "default" })
-        T.ok("CP-20  the rule follows --allowedTools",
-             pairs.contains { $0 == "--allowedTools" && $1 == "Edit(//Users/alice/.claude/skills/release-notes/SKILL.md)" })
+        func allowed(_ args: [String]) -> [String]? {
+            guard let i = args.firstIndex(of: "--settings"), i + 1 < args.count,
+                  let json = try? JSONSerialization.jsonObject(with: Data(args[i + 1].utf8)) as? [String: Any],
+                  let permissions = json["permissions"] as? [String: Any] else { return nil }
+            return permissions["allow"] as? [String]
+        }
+        T.eq("CP-20  the rule travels as settings",
+             allowed(a), ["Edit(//Users/alice/.claude/skills/release-notes/SKILL.md)"])
+        // --allowedTools splits its value at a space or comma after a closing
+        // parenthesis, and cut this rule in two (checked against 2.1.268).
+        let copied = SessionPlan.make(.init(filePath: "/Users/alice/My Notes (copy) it's/CLAUDE.md", projectRoots: [],
+                                            home: home, machineName: nil, selectedLines: nil, request: "",
+                                            voiceOver: false, sessionID: id))
+        T.ok("CP-31  so a folder like “My Notes (copy) it's” arrives in one piece, never through --allowedTools",
+             allowed(copied.arguments) == ["Edit(//Users/alice/My Notes (copy) it's/CLAUDE.md)"]
+             && !copied.arguments.contains("--allowedTools"))
+        let bare = SessionPlan.make(.init(filePath: "/Users/alice/a*b/CLAUDE.md", projectRoots: [], home: home,
+                                          machineName: nil, selectedLines: nil, request: "", voiceOver: false, sessionID: id))
+        T.ok("CP-32  and no settings at all when there is no rule", !bare.arguments.contains("--settings"))
         T.eq("CP-21  the first message comes last, after --", Array(a.suffix(2)),
              ["--", "In lines 12–16 of skills/release-notes/SKILL.md: Make it a checklist"])
         T.ok("CP-22  no screen-reader flag unless VoiceOver is on", !a.contains("--ax-screen-reader"))
@@ -89,6 +121,23 @@ enum ClaudePlanTests {
              && plan.systemPrompt.contains("They selected lines 12–16"))
         T.ok("CP-25  and tells Claude to keep the bytes it wasn't asked to change",
              plan.systemPrompt.contains("line endings, indentation, trailing whitespace"))
+
+        // Claude Code asks before editing anything inside a .claude folder, and
+        // no rule or permission mode short of skipping every check changes
+        // that (checked against 2.1.268). Nobody should be told otherwise.
+        T.ok("CP-33  a file inside a .claude folder is one Claude Code asks about",
+             SessionPlan.asksBeforeEditing("/Users/alice/.claude/skills/release-notes/SKILL.md")
+             && SessionPlan.asksBeforeEditing("/Users/alice/work/atlas/.claude/commands/ship.md")
+             && !SessionPlan.asksBeforeEditing("/Users/alice/work/atlas/CLAUDE.md")
+             && !SessionPlan.asksBeforeEditing("/Users/alice/work/my.claude/notes.md"))
+        T.ok("CP-34  and Claude is told to expect the question, not that the edit is approved",
+             plan.systemPrompt.contains("asks them to approve") && !plan.systemPrompt.contains("already approved"))
+        T.ok("CP-35  while a file elsewhere is already approved",
+             spoken.systemPrompt.contains("already approved") && !spoken.systemPrompt.contains("asks them to approve"))
+        T.ok("CP-37  and one that got no rule is never called approved",
+             bare.systemPrompt.contains("asks them to approve") && !bare.systemPrompt.contains("already approved"))
+        T.ok("CP-38  other files wait for a yes, whatever the person's own settings allow",
+             plan.systemPrompt.contains("wait for them to say yes before editing any of them"))
 
         T.suite("claude-plan — session names")
         T.eq("CP-26  a generic filename carries its folder",

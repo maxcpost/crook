@@ -111,8 +111,26 @@ enum ClaudeRegistryTests {
         T.ok("CG-21  a discarded session leaves the list at once, but its folder can outlive it briefly",
              registry.session(for: "/tmp/lingering.md", providerID: "local") == nil
              && fm.fileExists(atPath: lingering.folder.path))
+        T.ok("CG-23  but its record goes at once, so a quit in those seconds can't bring it back",
+             fm.fileExists(atPath: lingering.folder.path) && !fm.fileExists(atPath: lingering.file("session.json").path))
         T.ok("CG-22  so a runner closing its window can still read its script, then it is gone",
              spin(3) { !fm.fileExists(atPath: lingering.folder.path) })
+
+        guard let paused = begin(registry, "/tmp/paused.md") else { return }
+        registry.watch(paused)
+        let pausedRunner = startRunner(paused, """
+        print -r -- $$ > runner.pid
+        /bin/zsh -fc 'print -r -- $$ > child.pid; exec sleep 30'
+        print -r -- "$? 0" > exit
+        """)
+        _ = spin(5) { paused.state == .running && fm.fileExists(atPath: paused.file("child.pid").path) }
+        // What Ctrl-Z in Claude Code does to Terminal's job: both stopped.
+        if let child = SessionRegistry.readPID(paused.file("child.pid")) { kill(child, SIGSTOP) }
+        kill(pausedRunner.processIdentifier, SIGSTOP)
+        usleep(200_000)
+        registry.requestEnd(paused)
+        T.ok("CG-24  End Session still ends a session that Ctrl-Z suspended",
+             spin(8) { paused.state == .ended(.finished) }, "\(paused.state)")
 
         registry.discard(s)
         T.ok("CG-13  Done forgets a session, folder and all",
@@ -138,6 +156,49 @@ enum ClaudeRegistryTests {
         let stray = root.appendingPathComponent("update-1234", isDirectory: true)
         try? fm.createDirectory(at: stray, withIntermediateDirectories: true)
 
+        // A record from another version of Crook: a field this one doesn't
+        // know, one it expects missing, and an outcome it has never heard of.
+        let foreign = root.appendingPathComponent("foreign", isDirectory: true)
+        try? fm.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try? Data(#"{"id":"0B1B2C3D-0000-4000-8000-000000000001","filePath":"/tmp/foreign.md","providerID":"local","workingDirectory":"/tmp","startedAt":0,"outcome":"cancelledByTheFuture","endedAt":\#(Date().timeIntervalSinceReferenceDate),"newField":[1,2]}"#.utf8)
+            .write(to: foreign.appendingPathComponent("session.json"))
+
+        // An Update in Terminal, still running, with no record at all.
+        let updating = root.appendingPathComponent("update-5678", isDirectory: true)
+        try? fm.createDirectory(at: updating, withIntermediateDirectories: true)
+        let updateScript = updating.appendingPathComponent("launch.command")
+        try? "#!/bin/zsh\ncd -- \"${0:A:h}\"\nprint -r -- $$ > runner.pid\nsleep 20\n".write(to: updateScript, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: updateScript.path)
+        let updateRunner = Process()
+        updateRunner.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        updateRunner.arguments = [updateScript.path]
+        try? updateRunner.run()
+        _ = spin(5) { fm.fileExists(atPath: updating.appendingPathComponent("runner.pid").path) }
+
+        // Ended while Crook was closed, two days ago by its files.
+        guard let lapsed = begin(registry, "/tmp/lapsed.md") else { return }
+        lapsed.record.runnerPID = 999_999
+        registry.save(lapsed)
+        try? "0 30".write(to: lapsed.file("exit"), atomically: true, encoding: .utf8)
+        let twoDaysAgo = Date().addingTimeInterval(-2 * 86_400)
+        for name in ["exit", "session.json", "baseline"] {
+            try? fm.setAttributes([.modificationDate: twoDaysAgo], ofItemAtPath: lapsed.file(name).path)
+        }
+
+        // Crook gave up on it in the same instant the runner got past its
+        // check: it started its child, and the window was later closed.
+        guard let lateStart = begin(registry, "/tmp/late-start.md") else { return }
+        lateStart.record.runnerPID = 999_997
+        registry.save(lateStart)
+        fm.createFile(atPath: lateStart.file("abandoned").path, contents: nil)
+        try? "999996".write(to: lateStart.file("child.pid"), atomically: true, encoding: .utf8)
+
+        // Crook gave up on it, and the runner stood down without a report.
+        guard let stoodDown = begin(registry, "/tmp/stood-down.md") else { return }
+        stoodDown.record.runnerPID = 999_998
+        registry.save(stoodDown)
+        fm.createFile(atPath: stoodDown.file("abandoned").path, contents: nil)
+
         let again = SessionRegistry(root: root)
         again.fileChanged = { _ in false }
         again.reattach()
@@ -151,6 +212,20 @@ enum ClaudeRegistryTests {
         T.ok("CG-17  a live process that is not this session's runner is not mistaken for it",
              imp != nil && imp?.isLive == false, "\(String(describing: imp?.state))")
         T.ok("CG-18  a folder that is not a session is cleared away", !fm.fileExists(atPath: stray.path))
+        T.ok("CG-25  a record from another version of Crook is still read",
+             again.session(for: "/tmp/foreign.md", providerID: "local")?.state == .ended(.finished))
+        T.ok("CG-26  a folder a runner is still using is left alone, record or not",
+             fm.fileExists(atPath: updating.appendingPathComponent("launch.command").path))
+        updateRunner.terminate()
+        let lapsedBack = again.session(for: "/tmp/lapsed.md", providerID: "local")
+        T.ok("CG-27  a session that ended while Crook was closed is dated by its files, not by the relaunch",
+             lapsedBack?.state == .ended(.finished)
+             && abs((lapsedBack?.record.endedAt ?? Date()).timeIntervalSince(twoDaysAgo)) < 60,
+             "\(String(describing: lapsedBack?.record.endedAt))")
+        T.eq("CG-28  a runner that stood down without a report did not start",
+             again.session(for: "/tmp/stood-down.md", providerID: "local")?.state, .ended(.didNotStart))
+        T.eq("CG-29  but one that started Claude Code is a session, whatever the marker says",
+             again.session(for: "/tmp/late-start.md", providerID: "local")?.state, .ended(.finished))
         liveRunner.terminate()
         T.ok("CG-19  the reattached session still notices its runner exit", spin(5) { back?.isLive == false })
     }

@@ -35,6 +35,40 @@ final class ClaudeSession {
         var fingerprintsAtStart: [String: String] = [:]
         /// Absolute paths of the files near this one that changed during it.
         var alsoChanged: [String] = []
+
+        init(id: UUID, filePath: String, providerID: String, machineName: String?,
+             workingDirectory: String, startedAt: Date) {
+            self.id = id
+            self.filePath = filePath
+            self.providerID = providerID
+            self.machineName = machineName
+            self.workingDirectory = workingDirectory
+            self.startedAt = startedAt
+        }
+
+        /// Everything but what identifies the session may be missing, or be a
+        /// value this build doesn't know: a record written by another version
+        /// of Crook still describes a session someone may be in the middle of.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(UUID.self, forKey: .id)
+            filePath = try c.decode(String.self, forKey: .filePath)
+            providerID = try c.decode(String.self, forKey: .providerID)
+            workingDirectory = try c.decode(String.self, forKey: .workingDirectory)
+            startedAt = (try? c.decodeIfPresent(Date.self, forKey: .startedAt)) ?? Date()
+            machineName = try? c.decodeIfPresent(String.self, forKey: .machineName)
+            runnerPID = try? c.decodeIfPresent(Int32.self, forKey: .runnerPID)
+            crookFrameBefore = try? c.decodeIfPresent(CGRect.self, forKey: .crookFrameBefore)
+            crookFrameSet = try? c.decodeIfPresent(CGRect.self, forKey: .crookFrameSet)
+            endRequested = (try? c.decodeIfPresent(Bool.self, forKey: .endRequested)) ?? false
+            if c.contains(.outcome), (try? c.decodeNil(forKey: .outcome)) == false {
+                outcome = (try? c.decode(SessionRunner.Outcome.self, forKey: .outcome)) ?? .finished
+            }
+            endedAt = try? c.decodeIfPresent(Date.self, forKey: .endedAt)
+            restored = (try? c.decodeIfPresent(Bool.self, forKey: .restored)) ?? false
+            fingerprintsAtStart = (try? c.decodeIfPresent([String: String].self, forKey: .fingerprintsAtStart)) ?? [:]
+            alsoChanged = (try? c.decodeIfPresent([String].self, forKey: .alsoChanged)) ?? []
+        }
     }
 
     let folder: URL
@@ -165,7 +199,14 @@ final class SessionRegistry {
                 self.startTimers[s.id] = nil
                 guard s.isLive else { return }
                 FileManager.default.createFile(atPath: s.file("abandoned").path, contents: nil)
-                self.finish(s, .didNotStart)
+                // A runner can report in between that last look and this
+                // marker. Watch it: one that saw the marker exits at once
+                // without a report, and is counted as not started then.
+                if let pid = Self.readPID(s.file("runner.pid")) {
+                    self.runnerStarted(s, pid: pid)
+                } else {
+                    self.finish(s, .didNotStart)
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -197,18 +238,25 @@ final class SessionRegistry {
         }
     }
 
-    private func runnerExited(_ s: ClaudeSession) {
+    private func runnerExited(_ s: ClaudeSession, endedAt: Date = Date()) {
         guard s.isLive else { return }
         let report = (try? String(contentsOf: s.file("exit"), encoding: .utf8)).flatMap(SessionRunner.parseExit)
+        // A runner that saw Crook give up exits before starting anything. One
+        // that got past that in the same instant started its child, and is a
+        // session like any other.
+        if report == nil, FileManager.default.fileExists(atPath: s.file("abandoned").path),
+           !FileManager.default.fileExists(atPath: s.file("child.pid").path) {
+            return finish(s, .didNotStart, at: endedAt)
+        }
         let changed = fileChanged?(s) ?? false
         finish(s, SessionRunner.outcome(exit: report, endRequested: s.record.endRequested,
-                                        isRemote: s.isRemote, fileChanged: changed))
+                                        isRemote: s.isRemote, fileChanged: changed), at: endedAt)
     }
 
-    private func finish(_ s: ClaudeSession, _ outcome: SessionRunner.Outcome) {
+    private func finish(_ s: ClaudeSession, _ outcome: SessionRunner.Outcome, at endedAt: Date = Date()) {
         s.state = .ended(outcome)
         s.record.outcome = outcome
-        s.record.endedAt = Date()
+        s.record.endedAt = endedAt
         save(s)
         onChange?(s)
     }
@@ -234,14 +282,24 @@ final class SessionRegistry {
         let target = child ?? runner
         guard Self.stillOurs(target, runner: runner, folder: s.folder) else { return }
         kill(target, SIGTERM)
+        // Ctrl-Z in Claude Code suspends it and the runner together. A stopped
+        // process holds SIGTERM until it continues, and a stopped runner can't
+        // collect its child or report, so both are continued.
+        Self.continueSession(target: target, runner: runner, folder: s.folder)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             guard s.state == .stopping, Self.stillOurs(target, runner: runner, folder: s.folder) else { return }
             kill(target, SIGKILL)
+            Self.continueSession(target: target, runner: runner, folder: s.folder)
         }
     }
 
     private static func stillOurs(_ pid: Int32, runner: Int32, folder: URL) -> Bool {
         pid == runner ? isRunner(pid: runner, of: folder) : parentPID(of: pid) == runner
+    }
+
+    private static func continueSession(target: Int32, runner: Int32, folder: URL) {
+        if target != runner, parentPID(of: target) == runner { kill(target, SIGCONT) }
+        if isRunner(pid: runner, of: folder) { kill(runner, SIGCONT) }
     }
 
     /// Done: forget the session, folder and all.
@@ -258,6 +316,9 @@ final class SessionRegistry {
             try? FileManager.default.removeItem(at: folder)
             return
         }
+        // Forgotten now, even if Crook quits before the folder goes: without
+        // its record, the next launch has nothing to bring back.
+        try? FileManager.default.removeItem(at: s.file("session.json"))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             try? FileManager.default.removeItem(at: folder)
         }
@@ -277,9 +338,26 @@ final class SessionRegistry {
         for folder in folders {
             let name = folder.lastPathComponent
             guard !sessions.contains(where: { $0.folder.lastPathComponent == name }) else { continue }
-            guard let data = try? Data(contentsOf: folder.appendingPathComponent("session.json")),
-                  let record = try? JSONDecoder().decode(ClaudeSession.Record.self, from: data) else {
+            // A runner still using a folder keeps it, whatever else is true:
+            // an Update in Terminal, or a session whose record can't be read.
+            if let pid = Self.readPID(folder.appendingPathComponent("runner.pid")),
+               Self.isRunner(pid: pid, of: folder),
+               !fm.fileExists(atPath: folder.appendingPathComponent("session.json").path) {
+                continue
+            }
+            let recordURL = folder.appendingPathComponent("session.json")
+            guard let data = try? Data(contentsOf: recordURL) else {
                 try? fm.removeItem(at: folder)
+                continue
+            }
+            guard let record = try? JSONDecoder().decode(ClaudeSession.Record.self, from: data) else {
+                // Unreadable, perhaps from another version of Crook: leave it
+                // alone unless it is running nothing and a week old.
+                let running = Self.readPID(folder.appendingPathComponent("runner.pid"))
+                    .map { Self.isRunner(pid: $0, of: folder) } ?? false
+                if !running, now.timeIntervalSince(Self.lastActivity(in: folder) ?? now) > 7 * 86_400 {
+                    try? fm.removeItem(at: folder)
+                }
                 continue
             }
             let s = ClaudeSession(folder: folder, record: record, state: .opening)
@@ -301,15 +379,33 @@ final class SessionRegistry {
                 continue
             }
             s.record.runnerPID = pid
-            s.state = .running
-            sessions.append(s)
             if Self.isRunner(pid: pid, of: folder) {
+                s.state = .running
+                sessions.append(s)
                 attachExitSource(s, pid: pid)
-            } else {
-                s.endedWhileAway = true
-                runnerExited(s)
+                continue
             }
+            // It ended while Crook was closed: when it last did anything, not
+            // now, which could be weeks later.
+            let ended = Self.lastActivity(in: folder) ?? now
+            if now.timeIntervalSince(ended) > 7 * 86_400 {
+                try? fm.removeItem(at: folder)
+                continue
+            }
+            s.state = .running
+            s.endedWhileAway = true
+            sessions.append(s)
+            runnerExited(s, endedAt: ended)
         }
+    }
+
+    /// The newest modification among a session folder's files: its report,
+    /// the last change Crook saw land, or its record.
+    static func lastActivity(in folder: URL) -> Date? {
+        let fm = FileManager.default
+        return ["exit", "final", "window", "child.pid", "runner.pid", "session.json"]
+            .compactMap { (try? fm.attributesOfItem(atPath: folder.appendingPathComponent($0).path))?[.modificationDate] as? Date }
+            .max()
     }
 
     // MARK: - processes

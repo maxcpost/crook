@@ -16,7 +16,7 @@ import CryptoKit
 // And change notification cannot cross a mount at all — the client kernel never
 // observes another host's writes, so FSEvents has to run here.
 
-let AGENT_VERSION = 1
+let AGENT_VERSION = 2
 
 let out = FileHandle.standardOutput
 let outLock = NSLock()
@@ -210,15 +210,34 @@ while let line = readLine(strippingNewline: true) {
             emit(["id": id, "ok": false, "error": "bad payload"]); break
         }
         // Temp-and-rename, executed on this side, so a link that drops mid-write
-        // cannot leave a truncated file where a whole one used to be.
-        let tmp = p + ".crook-tmp"
+        // cannot leave a truncated file where a whole one used to be. Through a
+        // symlink to the file it names: CLAUDE.md is often a link to AGENTS.md,
+        // and the swap cannot replace a link.
+        // The roots permit the path as the tree shows it. Where a link takes it
+        // is not checked against them: a project reached through a linked
+        // folder (Dropbox and Google Drive set theirs up that way) resolves
+        // outside its own root, and must still save.
+        let fm = FileManager.default
+        let target = URL(fileURLWithPath: p).resolvingSymlinksInPath().path
+        var isDirectory: ObjCBool = false
+        let exists = fm.fileExists(atPath: target, isDirectory: &isDirectory)
+        if exists && isDirectory.boolValue {
+            emit(["id": id, "ok": false, "error": "is a folder"]); break
+        }
+        let tmp = target + ".crook-tmp"
         do {
             try data.write(to: URL(fileURLWithPath: tmp), options: .atomic)
-            if FileManager.default.fileExists(atPath: p) {
-                _ = try FileManager.default.replaceItemAt(URL(fileURLWithPath: p),
-                                                          withItemAt: URL(fileURLWithPath: tmp))
+            if exists {
+                let before = try? fm.attributesOfItem(atPath: target)
+                _ = try fm.replaceItemAt(URL(fileURLWithPath: target), withItemAt: URL(fileURLWithPath: tmp))
+                if let group = before?[.groupOwnerAccountID] {
+                    try? fm.setAttributes([.groupOwnerAccountID: group], ofItemAtPath: target)
+                }
+                if let mode = before?[.posixPermissions] {
+                    try? fm.setAttributes([.posixPermissions: mode], ofItemAtPath: target)
+                }
             } else {
-                try FileManager.default.moveItem(atPath: tmp, toPath: p)
+                try fm.moveItem(atPath: tmp, toPath: target)
             }
             emit(["id": id, "ok": true, "bytes": data.count])
         } catch {

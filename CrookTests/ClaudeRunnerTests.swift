@@ -37,6 +37,8 @@ enum ClaudeRunnerTests {
             print -rn -- "$0" > "$CROOK_STUB_OUT/which"
             print -rn -- "$PATH" > "$CROOK_STUB_OUT/path"
             print -rn -- "$PWD" > "$CROOK_STUB_OUT/cwd"
+            print -rn -- "${CROOK_STUB_FAR_TOKEN-}" > "$CROOK_STUB_OUT/token"
+            [[ -n ${CROOK_STUB_DELETE-} ]] && rm -rf -- "$CROOK_STUB_DELETE"
             : > "$CROOK_STUB_OUT/args"
             for a in "$@"; do print -rn -- "$a" >> "$CROOK_STUB_OUT/args"; printf '\0' >> "$CROOK_STUB_OUT/args"; done
             exit ${CROOK_STUB_EXIT:-0}
@@ -47,8 +49,20 @@ enum ClaudeRunnerTests {
             for a in "$@"; do print -rn -- "$a" >> "$CROOK_STUB_OUT/ssh-args"; printf '\0' >> "$CROOK_STUB_OUT/ssh-args"; done
             exec /bin/sh -c "${@[-1]}"
             """#)
-            // The far Mac's login shell, answering `command -v claude`.
-            install(shell, "#!/bin/sh\nprintf 'motd noise from a login script\\n'\nprintf 'CROOK_PATH=%s\\n' \"$CROOK_STUB_FAR_PATH\"\nprintf '%s\\n' \"$CROOK_STUB_CLAUDE\"\n")
+            // The far Mac's login shell: it talks, sets up its own PATH and a
+            // token the way a .zshrc does, runs what it is given, and prints a
+            // path on the way out the way a .zlogout can.
+            install(shell, #"""
+            #!/bin/sh
+            [ -n "$CROOK_STUB_HANG" ] && exec /bin/sleep 30
+            printf 'motd noise from a login script\n/tmp\n'
+            PATH="$CROOK_STUB_FAR_PATH"; export PATH
+            CROOK_STUB_FAR_TOKEN="far token"; export CROOK_STUB_FAR_TOKEN
+            # Names zsh holds read-only or as arrays, which it can't import.
+            status=5; path=/nowhere; argv=x; export status path argv
+            /bin/sh -c "$2"
+            printf '/tmp\n'
+            """#)
             verified = bin.appendingPathComponent("verified/claude")
             try? fm.createDirectory(at: verified.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? fm.copyItem(at: claude, to: verified)
@@ -59,17 +73,16 @@ enum ClaudeRunnerTests {
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }
 
-        func environment(stubOnPath: Bool = true, claudeOnFarMac: String? = nil, exit: Int32 = 0,
-                         farPath: String = "") -> [String: String] {
+        func environment(stubOnPath: Bool = true, claudeOnFarMac: Bool = true, exit: Int32 = 0,
+                         farPath: String? = nil, extra: [String: String] = [:]) -> [String: String] {
             [
                 "HOME": dir.path,
                 "PATH": (stubOnPath ? bin.path + ":" : "") + "/usr/bin:/bin:/usr/sbin:/sbin",
                 "SHELL": shell.path,
                 "CROOK_STUB_OUT": out.path,
                 "CROOK_STUB_EXIT": String(exit),
-                "CROOK_STUB_CLAUDE": claudeOnFarMac ?? claude.path,
-                "CROOK_STUB_FAR_PATH": farPath,
-            ]
+                "CROOK_STUB_FAR_PATH": farPath ?? ((claudeOnFarMac ? bin.path + ":" : "") + "/usr/bin:/bin"),
+            ].merging(extra) { $1 }
         }
 
         func session(_ name: String) -> URL {
@@ -86,6 +99,7 @@ enum ClaudeRunnerTests {
         func cwd() -> String? { try? String(contentsOf: out.appendingPathComponent("cwd"), encoding: .utf8) }
         func which() -> String? { try? String(contentsOf: out.appendingPathComponent("which"), encoding: .utf8) }
         func path() -> String? { try? String(contentsOf: out.appendingPathComponent("path"), encoding: .utf8) }
+        func token() -> String? { try? String(contentsOf: out.appendingPathComponent("token"), encoding: .utf8) }
 
         private func fields(_ url: URL) -> [String]? {
             guard let d = try? Data(contentsOf: url) else { return nil }
@@ -101,6 +115,12 @@ enum ClaudeRunnerTests {
     /// Run a session folder's launch.command as Terminal would, minus Terminal.
     @discardableResult
     private static func runRunner(_ folder: URL, _ env: [String: String], timeout: TimeInterval = 30) -> SessionRunner.Exit? {
+        runRunnerFully(folder, env, timeout: timeout).report
+    }
+
+    /// The runner's report, and the status the runner itself exited with.
+    private static func runRunnerFully(_ folder: URL, _ env: [String: String],
+                                       timeout: TimeInterval = 30) -> (report: SessionRunner.Exit?, status: Int32?) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [folder.appendingPathComponent("launch.command").path]
@@ -108,19 +128,20 @@ enum ClaudeRunnerTests {
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return nil }
+        guard (try? p.run()) != nil else { return (nil, nil) }
         let deadline = Date().addingTimeInterval(timeout)
         while p.isRunning && Date() < deadline { usleep(20_000) }
-        if p.isRunning { p.terminate(); return nil }
-        return (try? String(contentsOf: folder.appendingPathComponent("exit"), encoding: .utf8))
+        if p.isRunning { p.terminate(); return (nil, nil) }
+        let report = (try? String(contentsOf: folder.appendingPathComponent("exit"), encoding: .utf8))
             .flatMap(SessionRunner.parseExit)
+        return (report, p.terminationStatus)
     }
 
     private static func prepare(_ folder: URL, _ command: TerminalLauncher.Command,
-                                _ args: [String], ssh: URL? = nil) -> Bool {
+                                _ args: [String], ssh: URL? = nil, bundleID: String? = nil) -> Bool {
         do {
             try TerminalLauncher.prepare(folder: folder, command: command, claudeArguments: args,
-                                         frame: nil, bundleID: nil, includeWindowScript: false,
+                                         frame: nil, bundleID: bundleID, includeWindowScript: false,
                                          sshPath: ssh?.path ?? "/usr/bin/ssh")
             return true
         } catch {
@@ -190,6 +211,29 @@ enum ClaudeRunnerTests {
         T.eq("CR-11  a folder it may enter but not read is 92, the shape a privacy denial takes",
              runRunner(denied, bench.environment())?.status, 92)
 
+        bench.reset()
+        let vanishing = bench.session("vanishing")
+        _ = prepare(vanishing, .local(workingDirectory: project.path, claudePath: bench.claude.path), ["--"])
+        runRunner(vanishing, bench.environment(extra: ["CROOK_STUB_DELETE": vanishing.path]))
+        T.ok("CR-25  a session folder that disappears mid-session leaves nothing behind in the project",
+             bench.args() != nil && !fm.fileExists(atPath: project.appendingPathComponent("exit").path)
+             && !fm.fileExists(atPath: vanishing.path))
+
+        bench.reset()
+        let standDown = bench.session("stand-down")
+        _ = prepare(standDown, .local(workingDirectory: project.path, claudePath: bench.claude.path), ["--"])
+        fm.createFile(atPath: standDown.appendingPathComponent("abandoned").path, contents: nil)
+        runRunner(standDown, bench.environment())
+        T.ok("CR-26  a runner Crook stopped waiting for starts nothing and reports nothing",
+             bench.args() == nil && !fm.fileExists(atPath: standDown.appendingPathComponent("runner.pid").path))
+
+        let unclean = bench.session("unclean")
+        _ = prepare(unclean, .local(workingDirectory: project.path, claudePath: bench.claude.path), ["--"],
+                    bundleID: "com.example.crook-runner-test")
+        let uncleanRun = runRunnerFully(unclean, bench.environment(exit: 3))
+        T.ok("CR-27  after an error the runner itself exits unclean, so Terminal keeps the window to read",
+             uncleanRun.report?.status == 3 && uncleanRun.status == 3, "\(uncleanRun)")
+
         T.suite("claude-runner — another Mac")
         bench.reset()
         let remote = bench.session("remote")
@@ -208,13 +252,31 @@ enum ClaudeRunnerTests {
         T.eq("CR-15  claude on the far Mac starts in the working folder", bench.cwd(), project.path)
         T.eq("CR-16  and receives every argument byte for byte", bench.args(), args)
         T.ok("CR-17  and nothing in them ran as code there either", !fm.fileExists(atPath: pwned.path))
+        T.eq("CR-28  the claude found is the far shell's, not a path its login scripts printed",
+             bench.which(), bench.claude.path)
+        T.eq("CR-29  and it runs with that shell's environment, as it would in that Mac's own Terminal",
+             bench.token(), "far token")
 
         bench.reset()
         let farPath = bench.session("remote-path")
         _ = prepare(farPath, .remote(host: "mac-mini", workingDirectory: project.path), ["--"], ssh: bench.ssh)
-        runRunner(farPath, bench.environment(stubOnPath: false, farPath: "/far/homebrew/bin:/usr/bin:/bin"))
+        runRunner(farPath, bench.environment(stubOnPath: false, farPath: bench.bin.path + ":/far/homebrew/bin:/usr/bin:/bin"))
         T.eq("CR-24  claude on the far Mac gets that Mac's login PATH, so its MCP servers and hooks resolve",
-             bench.path(), "/far/homebrew/bin:/usr/bin:/bin")
+             bench.path(), bench.bin.path + ":/far/homebrew/bin:/usr/bin:/bin")
+
+        bench.reset()
+        let installerHome = bench.dir.appendingPathComponent(".local/bin", isDirectory: true)
+        try? fm.createDirectory(at: installerHome, withIntermediateDirectories: true)
+        try? fm.copyItem(at: bench.claude, to: installerHome.appendingPathComponent("claude"))
+        let hanging = bench.session("remote-hang")
+        _ = prepare(hanging, .remote(host: "mac-mini", workingDirectory: project.path), ["--"], ssh: bench.ssh)
+        let hangStarted = Date()
+        let hangRun = runRunner(hanging, bench.environment(stubOnPath: false, extra: ["CROOK_STUB_HANG": "1"]))
+        let hangTook = Date().timeIntervalSince(hangStarted)
+        T.ok("CR-30  a far login shell that hangs is given up on, and claude is found where the installer put it",
+             hangRun?.status == 0 && bench.which() == installerHome.appendingPathComponent("claude").path && hangTook < 15,
+             String(format: "%.1f s, %@", hangTook, String(describing: bench.which())))
+        try? fm.removeItem(at: installerHome.appendingPathComponent("claude"))
 
         let rgone = bench.session("remote-gone")
         _ = prepare(rgone, .remote(host: "mac-mini", workingDirectory: "/nowhere/at/all"), [], ssh: bench.ssh)
@@ -227,7 +289,7 @@ enum ClaudeRunnerTests {
             let rmissing = bench.session("remote-missing")
             _ = prepare(rmissing, .remote(host: "mac-mini", workingDirectory: project.path), [], ssh: bench.ssh)
             T.eq("CR-19  no claude on the far Mac is 90",
-                 runRunner(rmissing, bench.environment(stubOnPath: false, claudeOnFarMac: ""))?.status, 90)
+                 runRunner(rmissing, bench.environment(stubOnPath: false, claudeOnFarMac: false))?.status, 90)
         }
 
         T.suite("claude-runner — the scripts themselves")

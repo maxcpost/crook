@@ -171,7 +171,8 @@ final class SSHTransport {
 
     // MARK: - connect
 
-    private static let agentVersion = 1
+    /// 2: writes go through a symlink to the file it names.
+    private static let agentVersion = 2
     private var remotePath: String { "~/.crook/agent-\(Self.agentVersion)" }
 
     /// Probe, install if needed, then start the session.

@@ -139,6 +139,22 @@ enum AgentTests {
         }
         T.ok("A-04  every awkward encoding survives write-then-read unaltered", allExact)
 
+        // CLAUDE.md -> AGENTS.md on the other Mac, as on this one: the write
+        // changes the file the link names and keeps the link.
+        let agents = dir.appendingPathComponent("AGENTS.md").path
+        let link = dir.appendingPathComponent("CLAUDE.md").path
+        try? Data("before\n".utf8).write(to: URL(fileURLWithPath: agents))
+        try? FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: agents)
+        try? FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "AGENTS.md")
+        let through = pipe.send(["op": "write", "path": link, "b64": Data("after\n".utf8).base64EncodedString()])
+        T.ok("A-30  a write through a symlink changes the file it names and keeps the link",
+             through?["ok"] as? Bool == true
+             && (try? FileManager.default.destinationOfSymbolicLink(atPath: link)) == "AGENTS.md"
+             && FileManager.default.contents(atPath: agents) == Data("after\n".utf8),
+             "\(through ?? [:])")
+        T.eq("A-31  and keeps that file's permissions",
+             (try? FileManager.default.attributesOfItem(atPath: agents))?[.posixPermissions] as? Int, 0o640)
+
         // --- the same corpus the byte tests use ---
         let corpus = T.fixtureRoot.appendingPathComponent("corpus")
         var checked = 0, mismatched = 0
@@ -183,6 +199,23 @@ enum AgentTests {
              outside?["ok"] as? Bool == false)
         let inside = pipe.send(["op": "read", "path": real])
         T.ok("A-13  and one inside them still works", inside?["ok"] as? Bool == true)
+
+        // A project reached through a linked folder, the way Dropbox and Google
+        // Drive set theirs up: the path is inside the roots, the file it names
+        // is not, and it must still save.
+        let elsewhere = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("crook-agent-linked-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: elsewhere) }
+        try? Data("old\n".utf8).write(to: elsewhere.appendingPathComponent("CLAUDE.md"))
+        try? FileManager.default.createSymbolicLink(atPath: dir.appendingPathComponent("linked").path,
+                                                    withDestinationPath: elsewhere.path)
+        let linkedWrite = pipe.send(["op": "write", "path": dir.appendingPathComponent("linked/CLAUDE.md").path,
+                                     "b64": Data("new\n".utf8).base64EncodedString()])
+        T.ok("A-32  a file in a project reached through a linked folder still saves",
+             linkedWrite?["ok"] as? Bool == true
+             && FileManager.default.contents(atPath: elsewhere.appendingPathComponent("CLAUDE.md").path) == Data("new\n".utf8),
+             "\(linkedWrite ?? [:])")
 
         // --- watching, from the side that can see it ---
         _ = pipe.send(["op": "watch", "roots": [dir.path]])

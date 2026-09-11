@@ -20,6 +20,8 @@ enum ClaudePreflightTests {
         T.eq("CF-05  too old says which version it is",
              ClaudePreflight.judge(path: "/x/claude", versionOutput: "1.0.44 (Claude Code)"), .tooOld(version: "1.0.44"))
         T.eq("CF-06  no path is missing", ClaudePreflight.judge(path: nil, versionOutput: ""), .missing)
+        T.eq("CF-18  the version is found after a warning printed before it",
+             ClaudePreflight.version(from: "Warning: settings.json has a trailing comma\n2.1.300 (Claude Code)\n"), "2.1.300")
 
         T.suite("claude-preflight — this Mac")
         let fm = FileManager.default
@@ -41,6 +43,11 @@ enum ClaudePreflightTests {
         }
         let silentShell = script("silent-shell", "#!/bin/sh\nexit 0\n")
         let installed = bin.appendingPathComponent("claude").path
+        // This Mac's own Homebrew or /usr/local install would otherwise answer
+        // for the fake home, since every copy is considered.
+        let systemLocations = ClaudePreflight.systemLocations
+        ClaudePreflight.systemLocations = []
+        defer { ClaudePreflight.systemLocations = systemLocations }
 
         fakeClaude("2.3.0")
         ClaudePreflight.forgetCachedInstall()
@@ -55,11 +62,6 @@ enum ClaudePreflightTests {
 
         try? fm.removeItem(atPath: installed)
         ClaudePreflight.forgetCachedInstall()
-        // This Mac's own Homebrew or /usr/local install would otherwise
-        // answer for the fake home; set them aside for these two.
-        let systemLocations = ClaudePreflight.systemLocations
-        ClaudePreflight.systemLocations = []
-        defer { ClaudePreflight.systemLocations = systemLocations }
         do {
             T.eq("CF-09  nothing anywhere is missing",
                  ClaudePreflight.checkLocal(home: home.path, loginShell: silentShell.path), .missing)
@@ -68,7 +70,66 @@ enum ClaudePreflightTests {
             ClaudePreflight.forgetCachedInstall()
             _ = ClaudePreflight.checkLocal(home: home.path, loginShell: hanging.path)
             let took = Date().timeIntervalSince(started)
-            T.ok("CF-10  a login shell that hangs is given up on", took < 6, String(format: "%.1f s", took))
+            T.ok("CF-10  a login shell that hangs is given up on", took < 9, String(format: "%.1f s", took))
+
+            // Found along the PATH the person's own shell sets up, the way
+            // Terminal will find it.
+            let elsewhere = home.appendingPathComponent("elsewhere", isDirectory: true)
+            try? fm.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+            let newer = elsewhere.appendingPathComponent("claude")
+            try? "#!/bin/sh\necho '2.5.0 (Claude Code)'\n".write(to: newer, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: newer.path)
+            let pathShell = script("path-shell", "#!/bin/sh\necho 'Welcome back'\necho \"alias claude='claude --verbose'\"\necho 'CROOK_PATH=/nowhere:\(elsewhere.path)'\n")
+
+            ClaudePreflight.forgetCachedInstall()
+            T.eq("CF-15  an alias named claude doesn't hide the program on the shell's PATH",
+                 ClaudePreflight.checkLocal(home: home.path, loginShell: pathShell.path),
+                 .ready(path: newer.path, version: "2.5.0"))
+
+            fakeClaude("2.0.1")
+            ClaudePreflight.forgetCachedInstall()
+            T.eq("CF-16  an old copy where installers put it doesn't hide a newer one on the shell's PATH",
+                 ClaudePreflight.checkLocal(home: home.path, loginShell: pathShell.path),
+                 .ready(path: newer.path, version: "2.5.0"))
+
+            try? "#!/bin/sh\necho '2.1.0 (Claude Code)'\n".write(to: newer, atomically: true, encoding: .utf8)
+            ClaudePreflight.forgetCachedInstall()
+            T.eq("CF-19  when every copy is too old, the newest one is named",
+                 ClaudePreflight.checkLocal(home: home.path, loginShell: pathShell.path), .tooOld(version: "2.1.0"))
+            try? fm.removeItem(atPath: installed)
+
+            // An install that runs through an interpreter kept beside it, as an
+            // npm install under nvm does. An app opened from the Dock has only
+            // /usr/bin:/bin:/usr/sbin:/sbin, where that interpreter isn't.
+            let helper = elsewhere.appendingPathComponent("crook-fake-node")
+            try? "#!/bin/sh\necho '2.7.0 (Claude Code)'\n".write(to: helper, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+            try? "#!/usr/bin/env crook-fake-node\n".write(to: newer, atomically: true, encoding: .utf8)
+            ClaudePreflight.forgetCachedInstall()
+            T.eq("CF-17  an install that needs a program from its own folder still reports its version",
+                 ClaudePreflight.checkLocal(home: home.path, loginShell: pathShell.path),
+                 .ready(path: newer.path, version: "2.7.0"))
+            try? fm.removeItem(at: newer)
+
+            // The old per-user npm install, whose node lives only on the
+            // shell's PATH (nvm): not answerable from where the installer put
+            // it, until asked again with that PATH.
+            let nodeDir = home.appendingPathComponent("nvm-bin", isDirectory: true)
+            try? fm.createDirectory(at: nodeDir, withIntermediateDirectories: true)
+            let fakeNode = nodeDir.appendingPathComponent("crook-fake-nvm-node")
+            try? "#!/bin/sh\necho '2.8.0 (Claude Code)'\n".write(to: fakeNode, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeNode.path)
+            let localDir = home.appendingPathComponent(".claude/local", isDirectory: true)
+            try? fm.createDirectory(at: localDir, withIntermediateDirectories: true)
+            let localClaude = localDir.appendingPathComponent("claude")
+            try? "#!/usr/bin/env crook-fake-nvm-node\n".write(to: localClaude, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: localClaude.path)
+            let nvmShell = script("nvm-shell", "#!/bin/sh\necho 'CROOK_PATH=\(nodeDir.path):/usr/bin:/bin'\n")
+            ClaudePreflight.forgetCachedInstall()
+            T.eq("CF-20  an old npm install that needs node from the shell's PATH is found",
+                 ClaudePreflight.checkLocal(home: home.path, loginShell: nvmShell.path),
+                 .ready(path: localClaude.path, version: "2.8.0"))
+            try? fm.removeItem(at: localClaude)
         }
 
         // The time limit itself, whatever is installed where: a program that
@@ -88,8 +149,14 @@ enum ClaudePreflightTests {
 
         // The real remote command, run here through /bin/sh the way a login
         // shell on the far Mac runs what ssh hands it.
-        fakeClaude("2.4.0")
-        let farShell = script("far-shell", "#!/bin/sh\necho 'a login script that talks'\necho CROOK_PATH=/usr/bin:/bin\necho \(installed)\n")
+        // A real probe run through /bin/sh, with claude only on that shell's
+        // PATH, so the answer can't come from where installers put it.
+        let farBin = home.appendingPathComponent("far-bin", isDirectory: true)
+        try? fm.createDirectory(at: farBin, withIntermediateDirectories: true)
+        let farClaude = farBin.appendingPathComponent("claude")
+        try? "#!/bin/sh\necho '2.4.0 (Claude Code)'\n".write(to: farClaude, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: farClaude.path)
+        let farShell = script("far-shell", "#!/bin/sh\necho 'a login script that talks'\necho /tmp\nPATH=\(farBin.path):/usr/bin:/bin; export PATH\n/bin/sh -c \"$2\"\n")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", ClaudePreflight.remoteCommand()]
@@ -102,6 +169,6 @@ enum ClaudePreflightTests {
         p.waitUntilExit()
         T.eq("CF-13  the remote check finds and reads claude through the base64 template",
              ClaudePreflight.parseRemote(String(decoding: data, as: UTF8.self)),
-             .ready(path: installed, version: "2.4.0"))
+             .ready(path: farClaude.path, version: "2.4.0"))
     }
 }

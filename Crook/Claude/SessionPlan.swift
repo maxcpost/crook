@@ -30,10 +30,11 @@ struct SessionPlan: Equatable {
     let sessionName: String
     let firstMessage: String
     let systemPrompt: String
-    /// `Edit(//absolute/path)`, or nil when the path would be read as a glob.
-    /// Without the rule Claude Code simply asks before editing this file too,
-    /// which is the safe direction to be wrong in.
-    let preapprovalRule: String?
+    /// `Edit(//absolute/path)`, once for each form the path can be written in;
+    /// empty when the path would be read as a glob. Without a rule Claude Code
+    /// simply asks before editing this file too, which is the safe direction to
+    /// be wrong in.
+    let preapprovalRules: [String]
     /// Everything after the `claude` executable, in order.
     let arguments: [String]
 
@@ -43,7 +44,7 @@ struct SessionPlan: Equatable {
         let name = sessionName(file: input.filePath, machine: input.machineName)
         let first = firstMessage(relativePath: rel, lines: input.selectedLines, request: input.request)
         let prompt = systemPrompt(file: input.filePath, lines: input.selectedLines)
-        let rule = preapprovalRule(for: input.filePath)
+        let rules = preapprovalRules(for: input.filePath)
 
         var args = ["--session-id", input.sessionID.uuidString.lowercased(),
                     "--name", name,
@@ -52,16 +53,18 @@ struct SessionPlan: Equatable {
                     // lists: the same mode, under the name older versions
                     // also accept.
                     "--permission-mode", "default"]
-        if let rule { args += ["--allowedTools", rule] }
+        // As settings, not --allowedTools. That flag splits its value at a
+        // space or comma after a closing parenthesis, which cut the rule for a
+        // folder like "Notes (copy) v2" in two and left the file unapproved.
+        if let settings = permissionSettings(rules) { args += ["--settings", settings] }
         args += ["--append-system-prompt", prompt]
         if input.voiceOver { args.append("--ax-screen-reader") }
-        // --allowedTools takes any number of values. Without `--`, the first
-        // message would be read as one more tool name.
+        // Whatever the first message starts with, it is the message.
         args += ["--", first]
 
         return SessionPlan(workingDirectory: dir, relativePath: rel, sessionName: name,
                            firstMessage: first, systemPrompt: prompt,
-                           preapprovalRule: rule, arguments: args)
+                           preapprovalRules: rules, arguments: args)
     }
 
     // MARK: - where Claude Code starts
@@ -147,12 +150,20 @@ struct SessionPlan: Equatable {
             "  " + file,
         ]
         if let lines { head.append("  They selected \(linesPhrase(lines)) before opening this session.") }
+        let approval: String
+        if asksBeforeEditing(file) {
+            approval = "- Claude Code asks them to approve edits to this file, because it is inside a .claude folder. That is expected, not an error. Change what they ask for and nothing else."
+        } else if preapprovalRules(for: file).isEmpty {
+            approval = "- Claude Code asks them to approve edits to this file. Change what they ask for and nothing else."
+        } else {
+            approval = "- Edits to this file are already approved. Change what they ask for and nothing else."
+        }
         let rules = [
             "How to work with them:",
             "- Crook shows this file live and highlights each change as you save it. Crook keeps the file read-only while this session is open, so you are the only one editing it.",
-            "- Edits to this file are already approved. Change what they ask for and nothing else.",
+            approval,
             "- Keep everything you weren't asked to change exactly as it is: line endings, indentation, trailing whitespace, blank lines, the final newline, and frontmatter fields.",
-            "- If their request also needs other files changed (a skill folder renamed, a reference in another CLAUDE.md, a command that points at this file), say which files and why before editing them. Claude Code will ask them to approve each one.",
+            "- If their request also needs other files changed (a skill folder renamed, a reference in another CLAUDE.md, a command that points at this file), tell them which files and why, and wait for them to say yes before editing any of them.",
             "- If their first message doesn't say what to change, read the file and reply in one or two sentences: what the file is for, then ask what they'd like to change. Don't edit anything until they ask.",
             "- After your first change, tell them once, in one short line, that they can type /exit when they're finished to go back to Crook.",
             "- They may not be technical. Use plain words, keep replies short, and describe changes by what they do rather than as diffs.",
@@ -164,12 +175,38 @@ struct SessionPlan: Equatable {
 
     /// Glob characters would turn the path into a pattern, and a pattern can
     /// match files it was never meant to.
-    static func preapprovalRule(for file: String) -> String? {
+    ///
+    /// Claude Code compares the rule with the path as Claude writes it, which
+    /// is in composed form; a folder whose name is stored decomposed would
+    /// never match a rule in that form alone. So each distinct form gets one.
+    static func preapprovalRules(for file: String) -> [String] {
         guard file.hasPrefix("/"),
-              file.rangeOfCharacter(from: CharacterSet(charactersIn: "*?[]{}")) == nil else { return nil }
-        // `//` anchors an Edit rule at the filesystem root; a single `/` would
-        // anchor it at wherever the setting came from.
-        return "Edit(/" + file + ")"
+              file.rangeOfCharacter(from: CharacterSet(charactersIn: "*?[]{}")) == nil else { return [] }
+        var rules: [String] = []
+        for form in [file, file.precomposedStringWithCanonicalMapping, file.decomposedStringWithCanonicalMapping] {
+            // `//` anchors an Edit rule at the filesystem root; a single `/`
+            // would anchor it at wherever the setting came from.
+            let rule = "Edit(/" + form + ")"
+            // By bytes: Swift's == calls the two forms equal, which is the
+            // very difference that matters here.
+            if !rules.contains(where: { $0.utf8.elementsEqual(rule.utf8) }) { rules.append(rule) }
+        }
+        return rules
+    }
+
+    /// `{"permissions":{"allow":[…]}}` for `--settings`, or nil for no rules.
+    static func permissionSettings(_ rules: [String]) -> String? {
+        guard !rules.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: ["permissions": ["allow": rules]],
+                                                     options: [.sortedKeys, .withoutEscapingSlashes]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Claude Code treats everything inside a `.claude` folder as sensitive and
+    /// asks before each edit there, whatever the rules say (checked against
+    /// 2.1.268). Skills, commands and agents all live in one.
+    static func asksBeforeEditing(_ file: String) -> Bool {
+        (file as NSString).pathComponents.dropLast().contains(".claude")
     }
 
     // MARK: - selection
