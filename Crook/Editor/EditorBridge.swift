@@ -24,6 +24,9 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     /// The reader moved the caret — they are looking at this document.
     var onEngage: (() -> Void)?
     var onReady: (() -> Void)?
+    /// The reader tried to type while an Edit with Claude session has the file.
+    var onReadOnlyAttempt: (() -> Void)?
+    private var readOnly = false
 
     weak var webView: WKWebView?
     private var seenSeq = 0
@@ -57,6 +60,9 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         case "editorReady":
             isReady = true
             pushDocument()
+            // A web content process that crashed and reloaded mid-session
+            // must come back read-only, not quietly editable.
+            pushReadOnly()
             onReady?()
             // Self-check: confirm CM6's doc length equals the canonical buffer's
             // UTF-16 length. They must agree or every offset is wrong (S02).
@@ -89,6 +95,9 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         case "selection":
             if let head = body["head"] as? Int { caret = head }
             onEngage?()
+
+        case "readOnlyAttempt":
+            onReadOnlyAttempt?()
 
         case "jserror":
             NSLog("Crook: JS ERROR \(body["message"] ?? "") line \(body["line"] ?? "")")
@@ -148,6 +157,36 @@ final class EditorBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         guard isReady, let wv = webView else { return }
         wv.callAsyncJavaScript("CrookEditor.applyChangedLines(l);",
                                arguments: ["l": lines], in: nil, in: .page) { _ in }
+    }
+
+    /// Refuse input while an Edit with Claude session has the file.
+    func setReadOnly(_ on: Bool) {
+        guard on != readOnly else { return }
+        readOnly = on
+        pushReadOnly()
+    }
+
+    private func pushReadOnly() {
+        guard isReady, let wv = webView else { return }
+        wv.callAsyncJavaScript("CrookEditor.setReadOnly(r);", arguments: ["r": readOnly],
+                               in: nil, in: .page) { _ in }
+    }
+
+    func revealLine(_ line: Int) {
+        guard isReady, let wv = webView else { return }
+        wv.callAsyncJavaScript("CrookEditor.scrollToLine(n);", arguments: ["n": line],
+                               in: nil, in: .page) { _ in }
+    }
+
+    /// The current selection as UTF-16 offsets into the canonical buffer.
+    func selection(_ done: @escaping (_ anchor: Int, _ head: Int) -> Void) {
+        guard isReady, let wv = webView else { done(caret, caret); return }
+        wv.evaluateJavaScript("CrookEditor.getSelection()") { [weak self] value, _ in
+            let fallback = self?.caret ?? 0
+            let d = value as? [String: Any]
+            let anchor = d?["anchor"] as? Int ?? fallback
+            done(anchor, d?["head"] as? Int ?? anchor)
+        }
     }
 
     /// Push dead-path verdicts and frontmatter defects to the editor. Swift

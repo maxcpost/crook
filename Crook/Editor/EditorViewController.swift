@@ -11,6 +11,11 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     private var reachChip: ReachChip!
     private var diff: DiffOverlay?
     private var empty: EmptyStateView!
+    /// The Edit with Claude banner, and the two ways the text can meet the top
+    /// of the pane: under the banner, or at the top when there is none.
+    private let banner = SessionBanner()
+    private var webTopToView: NSLayoutConstraint!
+    private var webTopToBanner: NSLayoutConstraint!
     /// The document currently displayed. There is ONE editor, so a document
     /// that has been detached must not read this bridge — it holds someone
     /// else's text.
@@ -56,6 +61,23 @@ final class EditorViewController: NSViewController, WKUIDelegate {
             webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+
+        // The banner pushes the text down rather than covering it: the top
+        // lines are as likely as any to be the ones Claude just changed.
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.isHidden = true
+        container.addSubview(banner)
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: container.topAnchor),
+            banner.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            banner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        webTopToView = webView.topAnchor.constraint(equalTo: container.topAnchor)
+        webTopToBanner = webView.topAnchor.constraint(equalTo: banner.bottomAnchor)
+        webTopToView.isActive = true
+        // attachToContentLayoutGuide only adds a top constraint when there is
+        // none; there now always is.
+        topConstraint = webTopToView
 
         // Bottom-right, the way a browser parks a link preview: always there,
         // never in the way, and it explains the thing you are looking at
@@ -168,7 +190,7 @@ final class EditorViewController: NSViewController, WKUIDelegate {
     // MARK: - the change view
 
     /// Read-only. Nothing here writes to the document or to disk.
-    func showDiff(old: String, new: String, title: String) {
+    func showDiff(old: String, new: String, title: String, since: String? = "since you last opened it") {
         dismissDiff()
         let d = DiffOverlay(frame: view.bounds)
         d.translatesAutoresizingMaskIntoConstraints = false
@@ -180,7 +202,7 @@ final class EditorViewController: NSViewController, WKUIDelegate {
             d.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         diff = d
-        d.present(old: old, new: new, title: title) { [weak self] in self?.dismissDiff() }
+        d.present(old: old, new: new, title: title, since: since) { [weak self] in self?.dismissDiff() }
     }
 
     @discardableResult
@@ -211,6 +233,28 @@ final class EditorViewController: NSViewController, WKUIDelegate {
         // Nothing to separate when there is nothing to say.
         reachChip.isHidden = text.isEmpty
     }
+
+    /// Show, update or remove the Edit with Claude banner.
+    func setBanner(_ content: BannerContent?,
+                   onAction: @escaping (BannerContent.Action) -> Void = { _ in },
+                   onOpenFile: @escaping (String) -> Void = { _ in }) {
+        guard let content else {
+            guard !banner.isHidden else { return }
+            banner.isHidden = true
+            webTopToBanner.isActive = false
+            webTopToView.isActive = true
+            return
+        }
+        banner.onAction = onAction
+        banner.onOpenFile = onOpenFile
+        banner.apply(content)
+        guard banner.isHidden else { return }
+        banner.isHidden = false
+        webTopToView.isActive = false
+        webTopToBanner.isActive = true
+    }
+
+    func pulseBanner() { banner.pulse() }
 
 
 

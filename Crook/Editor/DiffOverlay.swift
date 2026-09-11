@@ -65,13 +65,15 @@ final class DiffOverlay: NSView {
         if event.keyCode == 53 { onDismiss?() } else { super.keyDown(with: event) }
     }
 
-    func present(old: String, new: String, title: String, onDismiss: @escaping () -> Void) {
+    /// `since` finishes the header's sentence. nil when the title already
+    /// says what the diff is measured from.
+    func present(old: String, new: String, title: String, since: String? = "since you last opened it",
+                 onDismiss: @escaping () -> Void) {
         self.onDismiss = onDismiss
         let (lines, summary) = UnifiedDiff.between(old, new)
 
-        let body = summary.isEmpty
-            ? "no textual change"
-            : "\(summary.added) added, \(summary.removed) removed since you last opened it"
+        let counts = "\(summary.added) added, \(summary.removed) removed"
+        let body = summary.isEmpty ? "no textual change" : (since.map { "\(counts) \($0)" } ?? counts)
         // A file outside the workspace tree has no breadcrumb; do not lead with
         // a dangling dash.
         header.stringValue = title.isEmpty ? body : "\(title) — \(body)"

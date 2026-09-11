@@ -12,7 +12,7 @@
 //     opt into subscript/superscript, emoji shortcodes and GFM autolinks.
 //   - setDocument is the ONLY sanctioned full-text push.
 
-import { EditorState, StateField, StateEffect, Annotation, RangeSetBuilder, Prec } from "@codemirror/state"
+import { EditorState, StateField, StateEffect, Annotation, RangeSetBuilder, Prec, Compartment } from "@codemirror/state"
 import { EditorView, Decoration, ViewPlugin, keymap, rectangularSelection, highlightSpecialChars } from "@codemirror/view"
 import { history, historyKeymap, defaultKeymap, undoDepth, redoDepth } from "@codemirror/commands"
 import { syntaxTree, syntaxHighlighting, HighlightStyle, LanguageSupport, LRLanguage, foldNodeProp, indentNodeProp } from "@codemirror/language"
@@ -441,6 +441,82 @@ const bridge = ViewPlugin.fromClass(class {
   }
 })
 
+// ---------------------------------------------------------------- read-only while Claude edits
+
+// One writer at a time. While an Edit with Claude session has this file, Crook
+// shows it live and refuses input; selecting, copying and scrolling still
+// work. An attempt to type is reported, so the banner can say why nothing
+// happened rather than the editor silently ignoring keys.
+const readOnlyConf = new Compartment()
+let readOnly = false
+let lastWheel = 0
+
+function reportAttempt() { post({ type: "readOnlyAttempt" }) }
+
+const readOnlyGuard = EditorView.domEventHandlers({
+  keydown(e) {
+    if (!readOnly) return false
+    if (e.metaKey || e.ctrlKey) {
+      const k = (e.key || "").toLowerCase()
+      if (k === "v" || k === "x" || k === "z" || k === "y") reportAttempt()
+      return false
+    }
+    if ((e.key && e.key.length === 1) || e.key === "Backspace" || e.key === "Delete" || e.key === "Enter" || e.key === "Tab") {
+      reportAttempt()
+    }
+    return false
+  },
+  beforeinput(e) {
+    if (!readOnly) return false
+    reportAttempt()
+    // Dictation and the emoji picker arrive here, not as keys.
+    if (e.cancelable) e.preventDefault()
+    return true
+  },
+  paste(e) {
+    if (!readOnly) return false
+    reportAttempt()
+    e.preventDefault()
+    return true
+  },
+  drop(e) {
+    if (!readOnly) return false
+    reportAttempt()
+    e.preventDefault()
+    return true
+  },
+  wheel() {
+    lastWheel = Date.now()
+    return false
+  },
+})
+
+function setReadOnly(on) {
+  readOnly = !!on
+  if (!view) return
+  view.dispatch({
+    effects: readOnlyConf.reconfigure(EditorState.readOnly.of(readOnly)),
+    annotations: [fromSwift.of(true)],
+  })
+}
+
+/// Bring a line Claude just changed into view — unless the reader is
+/// scrolling, or can already see it. Following along should never mean being
+/// dragged away from what you were reading.
+function scrollToLine(n) {
+  if (!view) return
+  if (Date.now() - lastWheel < 3000) return
+  const doc = view.state.doc
+  const line = doc.line(Math.max(1, Math.min(n | 0, doc.lines)))
+  const box = view.scrollDOM.getBoundingClientRect()
+  const at = view.coordsAtPos(line.from)
+  if (at && at.top >= box.top && at.bottom <= box.bottom) return
+  view.dispatch({
+    effects: EditorView.scrollIntoView(line.from, { y: "start", yMargin: Math.round(view.scrollDOM.clientHeight / 3) }),
+    annotations: [fromSwift.of(true)],
+  })
+}
+
 // ---------------------------------------------------------------- theme
 
 const theme = EditorView.theme({
@@ -608,6 +684,8 @@ function mount(parent) {
         decorations,
         diagnostics,
         changedLines,
+        readOnlyConf.of(EditorState.readOnly.of(readOnly)),
+        readOnlyGuard,
         bridge,
         theme,
         // defaultKeymap minus anything that writes characters we did not type.
@@ -713,4 +791,4 @@ function boot() {
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot)
 else boot()
 
-export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, flushNow, setScale, zoomIn, zoomOut, zoomReset }
+export { mount, setDocument, applyRemote, getText, getLength, getSelection, focus, selectRange, applyDiagnostics, applyChangedLines, flushNow, setScale, zoomIn, zoomOut, zoomReset, setReadOnly, scrollToLine }
